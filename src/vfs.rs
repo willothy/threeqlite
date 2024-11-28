@@ -1,11 +1,63 @@
 use std::sync::Arc;
 
+use aws_sdk_s3::types::ObjectLockLegalHoldStatus;
 use sqlite_vfs::Vfs;
 
 use crate::handle::Handle;
 
 struct Inner {
     s3: aws_sdk_s3::Client,
+    bucket: String,
+    lock_file: String,
+    current_lock: Arc<std::sync::Mutex<Option<Vec<u16>>>>,
+}
+
+impl Inner {
+    pub async fn request_lock(&self) -> Result<std::io::Error> {
+        let lock_uuid = uuid::Uuid::new_v4().to_bytes_le();
+        loop {
+            match self
+                .s3
+                .get_object_legal_hold()
+                .bucket(self.bucket)
+                .key(self.lock_file)
+                .send()
+                .await
+            {
+                Ok(lock_status) => {
+                    if let Some(status) = lock_status.legal_hold {
+                        if let Some(status) = status.status {
+                            if status == ObjectLockLegalHoldStatus::Off {
+                                match self
+                                    .s3
+                                    .put_object()
+                                    .bucket(self.bucket)
+                                    .key(self.lock_file)
+                                    .body(lock_uuid.to_vec())
+                                    .object_lock_legal_hold_status(ObjectLockLegalHoldStatus::On)
+                                    .send()
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        let vect = lock_uuid.to_vec();
+                                        *self.current_lock.lock().unwrap() = Some(vect.clone());
+                                        return Ok(vect);
+                                    }
+                                    Err(_) => {
+
+                                        // retry
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    
 }
 
 #[derive(Clone)]
