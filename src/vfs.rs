@@ -13,7 +13,7 @@ struct Inner {
 }
 
 pub trait Lock {
-    async fn request_lock(&self) -> Result<Vec<u8>, std::io::Error>;
+    fn request_lock(&self) -> impl std::future::Future<Output = Result<Vec<u8>, std::io::Error>>;
 }
 
 struct S3FileLock {
@@ -22,7 +22,6 @@ struct S3FileLock {
     lock_file: String,
     current_lock: std::sync::Mutex<Option<Vec<u8>>>,
 }
-
 
 impl Lock for S3FileLock {
     async fn request_lock(&self) -> Result<Vec<u8>, std::io::Error> {
@@ -69,7 +68,6 @@ impl Lock for S3FileLock {
         }
     }
 }
-
 
 impl Inner {
     pub async fn request_lock(&self) -> Result<Vec<u8>, std::io::Error> {
