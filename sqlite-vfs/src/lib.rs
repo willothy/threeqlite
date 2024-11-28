@@ -7,16 +7,15 @@ pub mod state;
 pub mod vfs;
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
+use std::future::Future;
 use std::io::ErrorKind;
 use std::mem::{size_of, ManuallyDrop, MaybeUninit};
 use std::ops::Range;
 use std::os::raw::{c_char, c_int};
-use std::pin::Pin;
 use std::ptr::null_mut;
 use std::slice;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use state::{FileState, State};
@@ -27,52 +26,66 @@ pub trait DatabaseHandle: Sync {
     type WalIndex: wip::WalIndex;
 
     /// Return the current size in bytes of the database.
-    async fn size(&self) -> Result<u64, std::io::Error>;
+    fn size(&self) -> impl Future<Output = Result<u64, std::io::Error>>;
 
     /// Reads the exact number of byte required to fill `buf` from the given `offset`.
-    async fn read_exact_at(&mut self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error>;
+    fn read_exact_at(
+        &mut self,
+        buf: &mut [u8],
+        offset: u64,
+    ) -> impl Future<Output = Result<(), std::io::Error>>;
 
     /// Attempts to write an entire `buf` starting from the given `offset`.
-    async fn write_all_at(&mut self, buf: &[u8], offset: u64) -> Result<(), std::io::Error>;
+    fn write_all_at(
+        &mut self,
+        buf: &[u8],
+        offset: u64,
+    ) -> impl Future<Output = Result<(), std::io::Error>>;
 
     /// Make sure all writes are committed to the underlying storage. If `data_only` is set to
     /// `true`, only the data and not the metadata (like size, access time, etc) should be synced.
-    async fn sync(&mut self, data_only: bool) -> Result<(), std::io::Error>;
+    fn sync(&mut self, data_only: bool) -> impl Future<Output = Result<(), std::io::Error>>;
 
     /// Set the database file to the specified `size`. Truncates or extends the underlying storage.
-    async fn set_len(&mut self, size: u64) -> Result<(), std::io::Error>;
+    fn set_len(&mut self, size: u64) -> impl Future<Output = Result<(), std::io::Error>>;
 
     /// Lock the database. Returns whether the requested lock could be acquired.
     /// Locking sequence:
     /// - The lock is never moved from [LockKind::None] to anything higher than [LockKind::Shared].
     /// - A [LockKind::Pending] is never requested explicitly.
     /// - A [LockKind::Shared] is always held when a [LockKind::Reserved] lock is requested
-    async fn lock(&mut self, lock: LockKind) -> Result<bool, std::io::Error>;
+    fn lock(&mut self, lock: LockKind) -> impl Future<Output = Result<bool, std::io::Error>>;
 
     /// Unlock the database.
-    async fn unlock(&mut self, lock: LockKind) -> Result<bool, std::io::Error> {
-        self.lock(lock).await
+    fn unlock(&mut self, lock: LockKind) -> impl Future<Output = Result<bool, std::io::Error>> {
+        self.lock(lock)
     }
 
     /// Check if the database this handle points to holds a [LockKind::Reserved],
     /// [LockKind::Pending] or [LockKind::Exclusive] lock.
-    async fn reserved(&mut self) -> Result<bool, std::io::Error>;
+    fn reserved(&mut self) -> impl Future<Output = Result<bool, std::io::Error>>;
 
     /// Return the current [LockKind] of the this handle.
-    async fn current_lock(&self) -> Result<LockKind, std::io::Error>;
+    fn current_lock(&self) -> impl Future<Output = Result<LockKind, std::io::Error>>;
 
     /// Change the chunk size of the database to `chunk_size`.
-    async fn set_chunk_size(&self, _chunk_size: usize) -> Result<(), std::io::Error> {
-        Ok(())
+    fn set_chunk_size(
+        &self,
+        _chunk_size: usize,
+    ) -> impl Future<Output = Result<(), std::io::Error>> {
+        async move { Ok(()) }
     }
 
     /// Check if the underlying data of the handle got moved or deleted. When moved, the handle can
     /// still be read from, but not written to anymore.
-    async fn moved(&self) -> Result<bool, std::io::Error> {
-        Ok(false)
+    fn moved(&self) -> impl Future<Output = Result<bool, std::io::Error>> {
+        async move { Ok(false) }
     }
 
-    async fn wal_index(&self, readonly: bool) -> Result<Self::WalIndex, std::io::Error>;
+    fn wal_index(
+        &self,
+        readonly: bool,
+    ) -> impl std::future::Future<Output = Result<Self::WalIndex, std::io::Error>> + Send;
 }
 
 /// A virtual file system for SQLite.
@@ -81,31 +94,42 @@ pub trait Vfs: Sync {
     type Handle: DatabaseHandle;
 
     /// Open the database `db` (of type `opts.kind`).
-    async fn open(&self, db: &str, opts: OpenOptions) -> Result<Self::Handle, std::io::Error>;
+    fn open(
+        &self,
+        db: &str,
+        opts: OpenOptions,
+    ) -> impl Future<Output = Result<Self::Handle, std::io::Error>>;
 
     /// Delete the database `db`.
-    async fn delete(&self, db: &str) -> Result<(), std::io::Error>;
+    fn delete(&self, db: &str) -> impl Future<Output = Result<(), std::io::Error>>;
 
     /// Check if a database `db` already exists.
-    async fn exists(&self, db: &str) -> Result<bool, std::io::Error>;
+    fn exists(&self, db: &str) -> impl Future<Output = Result<bool, std::io::Error>> + Send;
 
     /// Generate and return a path for a temporary database.
-    async fn temporary_name(&self) -> String;
+    fn temporary_name(&self) -> impl Future<Output = String>;
 
     /// Populate the `buffer` with random data.
-    async fn random(&self, buffer: &mut [i8]);
+    fn random(&self, buffer: &mut [i8]) -> impl Future<Output = ()>;
 
     /// Sleep for `duration`. Return the duration actually slept.
     fn sleep(&self, duration: Duration) -> Duration;
 
     /// Check access to `db`. The default implementation always returns `true`.
-    async fn access(&self, _db: &str, _write: bool) -> Result<bool, std::io::Error> {
-        Ok(true)
+    fn access(
+        &self,
+        _db: &str,
+        _write: bool,
+    ) -> impl Future<Output = Result<bool, std::io::Error>> {
+        async move { Ok(true) }
     }
 
     /// Retrieve the full pathname of a database `db`.
-    async fn full_pathname<'a>(&self, db: &'a str) -> Result<Cow<'a, str>, std::io::Error> {
-        Ok(db.into())
+    fn full_pathname<'a>(
+        &self,
+        db: &'a str,
+    ) -> impl Future<Output = Result<Cow<'a, str>, std::io::Error>> {
+        async move { Ok(db.into()) }
     }
 }
 

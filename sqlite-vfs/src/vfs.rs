@@ -204,7 +204,7 @@ async unsafe fn delete_inner<V: Vfs>(
 /// Test for access permissions. Return true if the requested permission is available, or false
 /// otherwise.
 #[tokio::main]
-pub async unsafe fn access_inner<V: Vfs>(
+async unsafe fn access_inner<V: Vfs>(
     p_vfs: *mut sqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     flags: c_int,
@@ -259,7 +259,7 @@ pub async unsafe fn access_inner<V: Vfs>(
 /// `z_path`. `z_out` is guaranteed to point to a buffer of at least (INST_MAX_PATHNAME+1)
 /// bytes.
 #[tokio::main]
-pub async unsafe fn full_pathname_inner<V: Vfs>(
+async unsafe fn full_pathname_inner<V: Vfs>(
     p_vfs: *mut sqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     n_out: c_int,
@@ -453,8 +453,8 @@ pub unsafe extern "C" fn dlclose<V>(p_vfs: *mut sqlite3_sys::sqlite3_vfs, p_hand
     }
 }
 
-/// Populate the buffer pointed to by `z_buf_out` with `n_byte` bytes of random data.
-pub unsafe extern "C" fn randomness<V: Vfs>(
+#[tokio::main]
+async unsafe fn randomness_inner<V: Vfs>(
     p_vfs: *mut sqlite3_sys::sqlite3_vfs,
     n_byte: c_int,
     z_buf_out: *mut c_char,
@@ -471,9 +471,18 @@ pub unsafe extern "C" fn randomness<V: Vfs>(
             Err(_) => return 0,
         };
 
-        state.vfs.random(bytes);
+        state.vfs.random(bytes).await;
     }
     bytes.len() as c_int
+}
+
+/// Populate the buffer pointed to by `z_buf_out` with `n_byte` bytes of random data.
+pub unsafe extern "C" fn randomness<V: Vfs>(
+    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    n_byte: c_int,
+    z_buf_out: *mut c_char,
+) -> c_int {
+    randomness_inner::<V>(p_vfs, n_byte, z_buf_out)
 }
 
 /// Sleep for `n_micro` microseconds. Return the number of microseconds actually slept.
