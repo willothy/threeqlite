@@ -3,4 +3,7 @@ name = "threeqlite"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies.sqlite-vfs]
+path = "./sqlite-vfs/"
+
 [dependencies]
