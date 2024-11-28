@@ -69,14 +69,31 @@ impl Lock for S3FileLock {
                                     .await
                                 {
                                     Ok(_) => {
-                                        let vect = lock_uuid.to_vec();
-                                        self.current_lock = Some(vect.clone());
-                                        return vect;
+                                        // this might be unnecessary, but double checking for now
+                                        {
+                                            let val = self
+                                                .s3
+                                                .get_object()
+                                                .bucket(self.bucket.clone())
+                                                .key(self.lock_file.clone())
+                                                .send()
+                                                .await;
+                                            if let Ok(obj) = val {
+                                                if let Some(bytes) = obj.body.bytes() {
+                                                    if bytes == lock_uuid.to_vec()  && obj.object_lock_legal_hold_status == Some(ObjectLockLegalHoldStatus::On) {
+                                                        let vect = lock_uuid.to_vec();
+                                                        self.current_lock = Some(vect.clone());
+                                                        return vect;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // let vect = lock_uuid.to_vec();
+                                        // self.current_lock = Some(vect.clone());
+                                        // return vect;
                                     }
-                                    Err(_set_legal_status_error) => {
-                                        
-                                        
-                                    }
+                                    Err(_set_legal_status_error) => {}
                                 }
                             }
                         }
@@ -189,7 +206,6 @@ impl Inner {
         }
     }
 
-
     pub async fn release_write_lock(&mut self) -> Result<(), snafu::Whatever> {
         let _ = self.metadata_lock.request_lock().await;
         if let Metadata::Writer(lock_uuid) = self.read_metadata().await? {
@@ -256,7 +272,7 @@ impl Inner {
             if ready_for_writer(current_metadata.clone()) {
                 self.write_metadata(Metadata::Writer(lock_uuid.to_vec()))
                     .await?;
-                return Ok(lock_uuid.to_vec());
+                break;
             } else if let Metadata::Reader(read_metadata) = current_metadata {
                 if read_metadata.readers.is_empty()
                     && read_metadata
