@@ -110,8 +110,42 @@ impl Lock for S3FileLock {
                     }
                 }
                 Err(legal_status_error) => {
-                    // this might happen every time, if no file exists
-                    panic!("Error setting legal hold status: {:?}", legal_status_error);
+                    // check if file exists
+                    match self
+                        .s3
+                        .get_object()
+                        .bucket(self.bucket.clone())
+                        .key(self.lock_file.clone())
+                        .send()
+                        .await
+                    {
+                       
+                        Err(get_obj_err) => {
+                            match self
+                                .s3
+                                .put_object()
+                                .bucket(&self.bucket)
+                                .key(&self.lock_file)
+                                .body(lock_uuid.to_vec().into())
+                                .object_lock_legal_hold_status(ObjectLockLegalHoldStatus::On)
+                                .send()
+                                .await
+                            {
+                                Ok(_) => {
+                                    let vect = lock_uuid.to_vec();
+                                    self.current_lock = Some(vect.clone());
+                                    return vect;
+                                }
+                                Err(_) => {
+                                    panic!("Error creating lock file: {}", get_obj_err)
+                                }
+                            }
+                        },
+                        _ => {
+                            panic!("Error getting legal hold status / but also it seems to exist ok: {}", legal_status_error)
+                        
+                        }
+                    }
                 }
             }
             // for debugging, remove this later
