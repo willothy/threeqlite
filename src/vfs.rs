@@ -435,19 +435,19 @@ impl Vfs for ThreeQLite {
     }
 
     async fn delete(&self, db: &str) -> Result<(), sqlite_vfs::error::Error<Self::Error>> {
-        if let Err(e) = self.inner.read().await.s3.get_object().send().await {
-            return Err(Error::from_aws(e).into());
-        }
+        // if let Err(e) = self.inner.read().await.s3.get_object().send().await {
+        //     return Err(Error::from_aws(e).into());
+        // }
 
         Ok(())
     }
 
     async fn exists(&self, db: &str) -> Result<bool, sqlite_vfs::error::Error<Self::Error>> {
-        todo!()
+        Ok(true)
     }
 
     async fn temporary_name(&self) -> String {
-        todo!()
+        uuid::Uuid::new_v4().to_string()
     }
 
     async fn random(&self, buffer: &mut [i8]) {
