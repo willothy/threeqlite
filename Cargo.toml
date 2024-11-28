@@ -7,3 +7,6 @@ edition = "2021"
 path = "./sqlite-vfs/"
 
 [dependencies]
+aws-config = "1.5.10"
+aws-sdk-s3 = "1.63.0"
+tokio = { version = "1.41.1", features = ["full"] }
