@@ -2,6 +2,7 @@
 //! Create a custom SQLite virtual file system by implementing the [Vfs] trait and registering it
 //! using [register].
 
+pub mod error;
 pub mod io;
 pub mod state;
 pub mod vfs;
@@ -19,73 +20,89 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use state::{FileState, State};
+use tokio::runtime::Handle;
 
 /// A file opened by [Vfs].
 pub trait DatabaseHandle: Sync {
     /// An optional trait used to store a WAL (write-ahead log).
     type WalIndex: wip::WalIndex;
+    type Error: std::error::Error;
 
     /// Return the current size in bytes of the database.
-    fn size(&self) -> impl Future<Output = Result<u64, std::io::Error>>;
+    fn size(&self) -> impl Future<Output = Result<u64, crate::error::Error<Self::Error>>>;
 
     /// Reads the exact number of byte required to fill `buf` from the given `offset`.
     fn read_exact_at(
         &mut self,
         buf: &mut [u8],
         offset: u64,
-    ) -> impl Future<Output = Result<(), std::io::Error>>;
+    ) -> impl Future<Output = Result<(), crate::error::Error<Self::Error>>>;
 
     /// Attempts to write an entire `buf` starting from the given `offset`.
     fn write_all_at(
         &mut self,
         buf: &[u8],
         offset: u64,
-    ) -> impl Future<Output = Result<(), std::io::Error>>;
+    ) -> impl Future<Output = Result<(), crate::error::Error<Self::Error>>>;
 
     /// Make sure all writes are committed to the underlying storage. If `data_only` is set to
     /// `true`, only the data and not the metadata (like size, access time, etc) should be synced.
-    fn sync(&mut self, data_only: bool) -> impl Future<Output = Result<(), std::io::Error>>;
+    fn sync(
+        &mut self,
+        data_only: bool,
+    ) -> impl Future<Output = Result<(), crate::error::Error<Self::Error>>>;
 
     /// Set the database file to the specified `size`. Truncates or extends the underlying storage.
-    fn set_len(&mut self, size: u64) -> impl Future<Output = Result<(), std::io::Error>>;
+    fn set_len(
+        &mut self,
+        size: u64,
+    ) -> impl Future<Output = Result<(), crate::error::Error<Self::Error>>>;
 
     /// Lock the database. Returns whether the requested lock could be acquired.
     /// Locking sequence:
     /// - The lock is never moved from [LockKind::None] to anything higher than [LockKind::Shared].
     /// - A [LockKind::Pending] is never requested explicitly.
     /// - A [LockKind::Shared] is always held when a [LockKind::Reserved] lock is requested
-    fn lock(&mut self, lock: LockKind) -> impl Future<Output = Result<bool, std::io::Error>>;
+    fn lock(
+        &mut self,
+        lock: LockKind,
+    ) -> impl Future<Output = Result<bool, crate::error::Error<Self::Error>>>;
 
     /// Unlock the database.
-    fn unlock(&mut self, lock: LockKind) -> impl Future<Output = Result<bool, std::io::Error>> {
+    fn unlock(
+        &mut self,
+        lock: LockKind,
+    ) -> impl Future<Output = Result<bool, crate::error::Error<Self::Error>>> {
         self.lock(lock)
     }
 
     /// Check if the database this handle points to holds a [LockKind::Reserved],
     /// [LockKind::Pending] or [LockKind::Exclusive] lock.
-    fn reserved(&mut self) -> impl Future<Output = Result<bool, std::io::Error>>;
+    fn reserved(&mut self) -> impl Future<Output = Result<bool, crate::error::Error<Self::Error>>>;
 
     /// Return the current [LockKind] of the this handle.
-    fn current_lock(&self) -> impl Future<Output = Result<LockKind, std::io::Error>>;
+    fn current_lock(
+        &self,
+    ) -> impl Future<Output = Result<LockKind, crate::error::Error<Self::Error>>>;
 
     /// Change the chunk size of the database to `chunk_size`.
     fn set_chunk_size(
         &self,
         _chunk_size: usize,
-    ) -> impl Future<Output = Result<(), std::io::Error>> {
+    ) -> impl Future<Output = Result<(), crate::error::Error<Self::Error>>> {
         async move { Ok(()) }
     }
 
     /// Check if the underlying data of the handle got moved or deleted. When moved, the handle can
     /// still be read from, but not written to anymore.
-    fn moved(&self) -> impl Future<Output = Result<bool, std::io::Error>> {
+    fn moved(&self) -> impl Future<Output = Result<bool, crate::error::Error<Self::Error>>> {
         async move { Ok(false) }
     }
 
     fn wal_index(
         &self,
         readonly: bool,
-    ) -> impl std::future::Future<Output = Result<Self::WalIndex, std::io::Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Self::WalIndex, crate::error::Error<Self::Error>>> + Send;
 }
 
 /// A virtual file system for SQLite.
@@ -93,18 +110,26 @@ pub trait Vfs: Sync {
     /// The file returned by [Vfs::open].
     type Handle: DatabaseHandle;
 
+    type Error: std::error::Error;
+
     /// Open the database `db` (of type `opts.kind`).
     fn open(
         &self,
         db: &str,
         opts: OpenOptions,
-    ) -> impl Future<Output = Result<Self::Handle, std::io::Error>>;
+    ) -> impl Future<Output = Result<Self::Handle, crate::error::Error<Self::Error>>>;
 
     /// Delete the database `db`.
-    fn delete(&self, db: &str) -> impl Future<Output = Result<(), std::io::Error>>;
+    fn delete(
+        &self,
+        db: &str,
+    ) -> impl Future<Output = Result<(), crate::error::Error<Self::Error>>>;
 
     /// Check if a database `db` already exists.
-    fn exists(&self, db: &str) -> impl Future<Output = Result<bool, std::io::Error>> + Send;
+    fn exists(
+        &self,
+        db: &str,
+    ) -> impl Future<Output = Result<bool, crate::error::Error<Self::Error>>> + Send;
 
     /// Generate and return a path for a temporary database.
     fn temporary_name(&self) -> impl Future<Output = String>;
@@ -120,7 +145,7 @@ pub trait Vfs: Sync {
         &self,
         _db: &str,
         _write: bool,
-    ) -> impl Future<Output = Result<bool, std::io::Error>> {
+    ) -> impl Future<Output = Result<bool, crate::error::Error<Self::Error>>> {
         async move { Ok(true) }
     }
 
@@ -128,7 +153,7 @@ pub trait Vfs: Sync {
     fn full_pathname<'a>(
         &self,
         db: &'a str,
-    ) -> impl Future<Output = Result<Cow<'a, str>, std::io::Error>> {
+    ) -> impl Future<Output = Result<Cow<'a, str>, crate::error::Error<Self::Error>>> {
         async move { Ok(db.into()) }
     }
 }
@@ -149,15 +174,30 @@ pub mod wip {
             true
         }
 
-        fn map(&mut self, region: u32) -> Result<[u8; 32768], std::io::Error>;
-        fn lock(&mut self, locks: Range<u8>, lock: WalIndexLock) -> Result<bool, std::io::Error>;
-        fn delete(self) -> Result<(), std::io::Error>;
+        fn map<Handle: DatabaseHandle>(
+            &mut self,
+            region: u32,
+        ) -> Result<[u8; 32768], crate::error::Error<Handle::Error>>;
+        fn lock<Handle: DatabaseHandle>(
+            &mut self,
+            locks: Range<u8>,
+            lock: WalIndexLock,
+        ) -> Result<bool, crate::error::Error<Handle::Error>>;
+        fn delete<Handle: DatabaseHandle>(self) -> Result<(), crate::error::Error<Handle::Error>>;
 
-        fn pull(&mut self, _region: u32, _data: &mut [u8; 32768]) -> Result<(), std::io::Error> {
+        fn pull<Handle: DatabaseHandle>(
+            &mut self,
+            _region: u32,
+            _data: &mut [u8; 32768],
+        ) -> Result<(), crate::error::Error<Handle::Error>> {
             Ok(())
         }
 
-        fn push(&mut self, _region: u32, _data: &[u8; 32768]) -> Result<(), std::io::Error> {
+        fn push<Handle: DatabaseHandle>(
+            &mut self,
+            _region: u32,
+            _data: &[u8; 32768],
+        ) -> Result<(), crate::error::Error<Handle::Error>> {
             Ok(())
         }
     }
@@ -242,7 +282,7 @@ pub enum LockKind {
 }
 
 /// Register a virtual file system ([Vfs]) to SQLite.
-pub fn register<F: DatabaseHandle, V: Vfs<Handle = F>>(
+pub fn register<F: DatabaseHandle<Error = V::Error>, V: Vfs<Handle = F>>(
     name: &str,
     vfs: V,
     as_default: bool,
@@ -455,19 +495,22 @@ impl wip::WalIndex for WalDisabled {
         false
     }
 
-    fn map(&mut self, _region: u32) -> Result<[u8; 32768], std::io::Error> {
-        Err(std::io::Error::new(ErrorKind::Other, "wal is disabled"))
+    fn map<Handle: DatabaseHandle>(
+        &mut self,
+        _region: u32,
+    ) -> Result<[u8; 32768], crate::error::Error<Handle::Error>> {
+        Err(crate::error::Error::WalDisabled)
     }
 
-    fn lock(
+    fn lock<Handle: DatabaseHandle>(
         &mut self,
         _locks: Range<u8>,
         _lock: wip::WalIndexLock,
-    ) -> Result<bool, std::io::Error> {
-        Err(std::io::Error::new(ErrorKind::Other, "wal is disabled"))
+    ) -> Result<bool, crate::error::Error<Handle::Error>> {
+        Err(crate::error::Error::WalDisabled)
     }
 
-    fn delete(self) -> Result<(), std::io::Error> {
+    fn delete<Handle: DatabaseHandle>(self) -> Result<(), crate::error::Error<Handle::Error>> {
         Ok(())
     }
 }

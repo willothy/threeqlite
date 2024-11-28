@@ -1,17 +1,18 @@
 use std::{sync::Arc, time::Duration};
 
 use aws_sdk_s3::types::ObjectLockLegalHoldStatus;
+use rand::{Rng as _, RngCore};
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
-use sqlite_vfs::Vfs;
+use sqlite_vfs::{OpenAccess, OpenKind, Vfs};
 
-use crate::handle::Handle;
+use crate::{error::Error, handle::Handle};
 
 struct Inner {
-    s3: aws_sdk_s3::Client,
-    metadata_lock: S3FileLock,
-    metadata_filename: String,
-    current_lock: Option<Vec<u8>>,
+    pub s3: aws_sdk_s3::Client,
+    pub metadata_lock: S3FileLock,
+    pub metadata_filename: String,
+    pub current_lock: Option<Vec<u8>>,
     // bucket: String,
     // lock_file: String,
     // current_lock: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
@@ -80,7 +81,10 @@ impl Lock for S3FileLock {
                                                 .await;
                                             if let Ok(obj) = val {
                                                 if let Some(bytes) = obj.body.bytes() {
-                                                    if bytes == lock_uuid.to_vec()  && obj.object_lock_legal_hold_status == Some(ObjectLockLegalHoldStatus::On) {
+                                                    if bytes == lock_uuid.to_vec()
+                                                        && obj.object_lock_legal_hold_status
+                                                            == Some(ObjectLockLegalHoldStatus::On)
+                                                    {
                                                         let vect = lock_uuid.to_vec();
                                                         self.current_lock = Some(vect.clone());
                                                         return vect;
@@ -310,20 +314,56 @@ pub struct ThreeQLite {
 
 impl Vfs for ThreeQLite {
     type Handle = Handle;
+    type Error = crate::error::Error;
 
     async fn open(
         &self,
         db: &str,
         opts: sqlite_vfs::OpenOptions,
-    ) -> Result<Self::Handle, std::io::Error> {
-        todo!()
+    ) -> Result<Self::Handle, sqlite_vfs::error::Error<Self::Error>> {
+        let sqlite_vfs::OpenOptions { kind, access, .. } = opts;
+
+        match kind {
+            OpenKind::MainDb => {}
+            OpenKind::MainJournal => unimplemented!(),
+            OpenKind::TempDb => unimplemented!(),
+            OpenKind::TempJournal => unimplemented!(),
+            OpenKind::TransientDb => unimplemented!(),
+            OpenKind::SubJournal => unimplemented!(),
+            OpenKind::SuperJournal => unimplemented!(),
+            OpenKind::Wal => unimplemented!(),
+        }
+
+        match access {
+            OpenAccess::Read => {
+                // TODO: Throw if doesn't exist
+            }
+            OpenAccess::Write => {
+                // TODO: Throw if doesn't exist
+            }
+            OpenAccess::Create => {
+                // TODO: Ensure created
+            }
+            OpenAccess::CreateNew => {
+                // TODO: Ensure created, throw if already exists
+            }
+        }
+
+        Ok(Handle {
+            storage: self.clone(),
+            obj_key: db.to_owned(),
+        })
     }
 
-    async fn delete(&self, db: &str) -> Result<(), std::io::Error> {
-        todo!()
+    async fn delete(&self, db: &str) -> Result<(), sqlite_vfs::error::Error<Self::Error>> {
+        if let Err(e) = self.inner.s3.get_object().send().await {
+            return Err(Error::from_aws(e).into());
+        }
+
+        Ok(())
     }
 
-    async fn exists(&self, db: &str) -> Result<bool, std::io::Error> {
+    async fn exists(&self, db: &str) -> Result<bool, sqlite_vfs::error::Error<Self::Error>> {
         todo!()
     }
 
@@ -332,10 +372,11 @@ impl Vfs for ThreeQLite {
     }
 
     async fn random(&self, buffer: &mut [i8]) {
-        todo!()
+        rand::thread_rng().fill(buffer);
     }
 
     fn sleep(&self, duration: std::time::Duration) -> std::time::Duration {
-        todo!()
+        std::thread::sleep(duration.clone());
+        duration
     }
 }

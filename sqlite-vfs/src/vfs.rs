@@ -3,13 +3,13 @@
 
 use std::{
     ffi::{c_char, c_int, c_void, CStr, CString},
-    future::Future,
     io::ErrorKind,
     sync::Arc,
     time::Duration,
 };
 
 use crate::{
+    error::Error,
     state::{null_ptr_error, vfs_state, FileExt, FileState},
     DatabaseHandle, OpenAccess, OpenKind, OpenOptions, Vfs, MAX_PATH_LENGTH,
 };
@@ -31,18 +31,15 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
     let name = if z_name.is_null() {
         None
     } else {
-        match CStr::from_ptr(z_name).to_str() {
+        let raw = CStr::from_ptr(z_name);
+        match raw.to_str() {
             Ok(name) => Some(name),
             Err(_) => {
                 return state.set_last_error(
                     sqlite3_sys::SQLITE_CANTOPEN,
-                    std::io::Error::new(
-                        ErrorKind::Other,
-                        format!(
-                            "open failed: database must be valid utf8 (received: {:?})",
-                            CStr::from_ptr(z_name)
-                        ),
-                    ),
+                    Error::InvalidDbName {
+                        name: raw.to_owned(),
+                    },
                 )
             }
         }
@@ -52,30 +49,18 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
     let mut opts = match OpenOptions::from_flags(flags) {
         Some(opts) => opts,
         None => {
-            return state.set_last_error(
-                sqlite3_sys::SQLITE_CANTOPEN,
-                std::io::Error::new(ErrorKind::Other, "invalid open flags"),
-            );
+            return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::InvalidOpenFlags);
         }
     };
 
     if z_name.is_null() && !opts.delete_on_close {
-        return state.set_last_error(
-            sqlite3_sys::SQLITE_CANTOPEN,
-            std::io::Error::new(
-                ErrorKind::Other,
-                "delete on close expected for temporary database",
-            ),
-        );
+        return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::InvalidOpenFlags);
     }
 
     let out_file = match (p_file as *mut FileState<V, F>).as_mut() {
         Some(f) => f,
         None => {
-            return state.set_last_error(
-                sqlite3_sys::SQLITE_CANTOPEN,
-                std::io::Error::new(ErrorKind::Other, "invalid file pointer"),
-            );
+            return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::InvalidFilePtr);
         }
     };
 
@@ -95,31 +80,33 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
     let result = match result {
         Ok(f) => Ok(f),
         // handle creation failure due to readonly directory
-        Err(err)
-            if err.kind() == ErrorKind::PermissionDenied
-                && matches!(
-                    opts.kind,
-                    OpenKind::SuperJournal | OpenKind::MainJournal | OpenKind::Wal
-                )
-                && matches!(opts.access, OpenAccess::Create | OpenAccess::CreateNew)
+        Err(Error::PermissionDenied)
+            if matches!(
+                opts.kind,
+                OpenKind::SuperJournal | OpenKind::MainJournal | OpenKind::Wal
+            ) && matches!(opts.access, OpenAccess::Create | OpenAccess::CreateNew)
                 && !state.vfs.exists(&name).await.unwrap_or(false) =>
         {
-            return state.set_last_error(sqlite3_sys::SQLITE_READONLY_DIRECTORY, err);
+            return state.set_last_error(
+                sqlite3_sys::SQLITE_READONLY_DIRECTORY,
+                Error::PermissionDenied,
+            );
         }
 
         // Try again as readonly
-        Err(err)
-            if err.kind() == ErrorKind::PermissionDenied && opts.access != OpenAccess::Read =>
-        {
+        Err(Error::PermissionDenied) if opts.access != OpenAccess::Read => {
             opts.access = OpenAccess::Read;
-            state.vfs.open(&name, opts.clone()).await.map_err(|_| err)
+            state
+                .vfs
+                .open(&name, opts.clone())
+                .await
+                .map_err(|_| Error::PermissionDenied)
         }
 
-        // e.g. tried to open a directory
-        Err(err) if err.kind() == ErrorKind::Other && opts.access == OpenAccess::Read => {
-            return state.set_last_error(sqlite3_sys::SQLITE_IOERR, err);
-        }
-
+        // // e.g. tried to open a directory
+        // Err(err) if err.kind() == ErrorKind::Other && opts.access == OpenAccess::Read => {
+        //     return state.set_last_error(sqlite3_sys::SQLITE_IOERR, err);
+        // }
         Err(err) => Err(err),
     };
     let file = match result {
@@ -172,18 +159,15 @@ async unsafe fn delete_inner<V: Vfs>(
         Err(_) => return sqlite3_sys::SQLITE_DELETE,
     };
 
-    let path = match CStr::from_ptr(z_path).to_str() {
+    let raw = CStr::from_ptr(z_path);
+    let path = match raw.to_str() {
         Ok(name) => name,
         Err(_) => {
             return state.set_last_error(
                 sqlite3_sys::SQLITE_ERROR,
-                std::io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "delete failed: database must be valid utf8 (received: {:?})",
-                        CStr::from_ptr(z_path)
-                    ),
-                ),
+                crate::error::Error::InvalidDbName {
+                    name: raw.to_owned(),
+                },
             )
         }
     };
@@ -192,11 +176,10 @@ async unsafe fn delete_inner<V: Vfs>(
     match state.vfs.delete(path).await {
         Ok(_) => sqlite3_sys::SQLITE_OK,
         Err(err) => {
-            if err.kind() == ErrorKind::NotFound {
-                sqlite3_sys::SQLITE_IOERR_DELETE_NOENT
-            } else {
-                state.set_last_error(sqlite3_sys::SQLITE_DELETE, err)
+            if let Error::DbNotFound { name } = &err {
+                return sqlite3_sys::SQLITE_IOERR_DELETE_NOENT;
             }
+            state.set_last_error(sqlite3_sys::SQLITE_DELETE, err)
         }
     }
 }
@@ -228,7 +211,7 @@ async unsafe fn access_inner<V: Vfs>(
                 CStr::from_ptr(z_path)
             );
 
-            if let Ok(p_res_out) = p_res_out.as_mut().ok_or_else(null_ptr_error) {
+            if let Ok(p_res_out) = p_res_out.as_mut().ok_or_else(null_ptr_error::<V::Error>) {
                 *p_res_out = false as i32;
             }
 
@@ -275,37 +258,33 @@ async unsafe fn full_pathname_inner<V: Vfs>(
         Err(_) => return sqlite3_sys::SQLITE_ERROR,
     };
 
-    let path = match CStr::from_ptr(z_path).to_str() {
+    let raw = CStr::from_ptr(z_path);
+    let path = match raw.to_str() {
         Ok(name) => name,
         Err(_) => {
             return state.set_last_error(
                 sqlite3_sys::SQLITE_ERROR,
-                std::io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "full_pathname failed: database must be valid utf8 (received: {:?})",
-                        CStr::from_ptr(z_path)
-                    ),
-                ),
+                Error::InvalidDbName {
+                    name: raw.to_owned(),
+                },
             )
         }
     };
     log::trace!("full_pathname name={}", path);
 
-    let name = match state.vfs.full_pathname(path).await.and_then(|name| {
-        CString::new(name.to_string())
-            .map_err(|_| std::io::Error::new(ErrorKind::Other, "name must not contain a nul byte"))
-    }) {
+    let name = match state
+        .vfs
+        .full_pathname(path)
+        .await
+        .map(|name| CString::new(name.to_string()).expect("str should never contain null byte"))
+    {
         Ok(name) => name,
         Err(err) => return state.set_last_error(sqlite3_sys::SQLITE_ERROR, err),
     };
 
     let name = name.to_bytes_with_nul();
     if name.len() > n_out as usize || name.len() > MAX_PATH_LENGTH {
-        return state.set_last_error(
-            sqlite3_sys::SQLITE_CANTOPEN,
-            std::io::Error::new(ErrorKind::Other, "full pathname is too long"),
-        );
+        return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::PathTooLong);
     }
     let out = std::slice::from_raw_parts_mut(z_out as *mut u8, name.len());
     out.copy_from_slice(name);
@@ -587,7 +566,7 @@ pub unsafe extern "C" fn next_system_call<V>(
     std::ptr::null()
 }
 
-pub unsafe extern "C" fn get_last_error<V>(
+pub unsafe extern "C" fn get_last_error<V: Vfs>(
     p_vfs: *mut sqlite3_sys::sqlite3_vfs,
     n_byte: c_int,
     z_err_msg: *mut c_char,
