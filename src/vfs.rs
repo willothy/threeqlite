@@ -111,7 +111,7 @@ impl Lock for S3FileLock {
                 }
                 Err(legal_status_error) => {
                     // this might happen every time, if no file exists
-                    eprintln!("Error setting legal hold status: {}", legal_status_error);
+                    panic!("Error setting legal hold status: {:?}", legal_status_error);
                 }
             }
             // for debugging, remove this later

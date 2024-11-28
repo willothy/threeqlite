@@ -22,3 +22,4 @@ bincode = "1.3.3"
 rand = "0.8.5"
 tokio-stream = { version = "0.1.16", features = ["full"] }
 rusqlite = "0.32.1"
+dotenvy = "0.15.7"
