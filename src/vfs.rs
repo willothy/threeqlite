@@ -68,7 +68,7 @@ pub struct ThreeQLite {
 impl Vfs for ThreeQLite {
     type Handle = Handle;
 
-    fn open(
+    async fn open(
         &self,
         db: &str,
         opts: sqlite_vfs::OpenOptions,
@@ -76,19 +76,19 @@ impl Vfs for ThreeQLite {
         todo!()
     }
 
-    fn delete(&self, db: &str) -> Result<(), std::io::Error> {
+    async fn delete(&self, db: &str) -> Result<(), std::io::Error> {
         todo!()
     }
 
-    fn exists(&self, db: &str) -> Result<bool, std::io::Error> {
+    async fn exists(&self, db: &str) -> Result<bool, std::io::Error> {
         todo!()
     }
 
-    fn temporary_name(&self) -> String {
+    async fn temporary_name(&self) -> String {
         todo!()
     }
 
-    fn random(&self, buffer: &mut [i8]) {
+    async fn random(&self, buffer: &mut [i8]) {
         todo!()
     }
 

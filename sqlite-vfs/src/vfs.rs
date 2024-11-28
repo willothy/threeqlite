@@ -2,15 +2,16 @@
 // https://github.com/sqlite/sqlite/blob/a959bf53110bfada67a3a52187acd57aa2f34e19/ext/misc/memvfs.c
 
 use std::{
-    ffi::{c_char, c_int, CStr},
+    ffi::{c_char, c_int, c_void, CStr, CString},
     future::Future,
     io::ErrorKind,
     sync::Arc,
+    time::Duration,
 };
 
 use crate::{
     state::{null_ptr_error, vfs_state, FileExt, FileState},
-    DatabaseHandle, OpenAccess, OpenKind, OpenOptions, Vfs,
+    DatabaseHandle, OpenAccess, OpenKind, OpenOptions, Vfs, MAX_PATH_LENGTH,
 };
 
 /// Open a new file handler.
@@ -254,6 +255,64 @@ pub async unsafe fn access_inner<V: Vfs>(
     sqlite3_sys::SQLITE_OK
 }
 
+/// Populate buffer `z_out` with the full canonical pathname corresponding to the pathname in
+/// `z_path`. `z_out` is guaranteed to point to a buffer of at least (INST_MAX_PATHNAME+1)
+/// bytes.
+#[tokio::main]
+pub async unsafe fn full_pathname_inner<V: Vfs>(
+    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    z_path: *const c_char,
+    n_out: c_int,
+    z_out: *mut c_char,
+) -> c_int {
+    // #[cfg(feature = "sqlite_test")]
+    // if simulate_io_error() {
+    //     return sqlite3_sys::SQLITE_ERROR;
+    // }
+
+    let state = match vfs_state::<V>(p_vfs) {
+        Ok(state) => state,
+        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+    };
+
+    let path = match CStr::from_ptr(z_path).to_str() {
+        Ok(name) => name,
+        Err(_) => {
+            return state.set_last_error(
+                sqlite3_sys::SQLITE_ERROR,
+                std::io::Error::new(
+                    ErrorKind::Other,
+                    format!(
+                        "full_pathname failed: database must be valid utf8 (received: {:?})",
+                        CStr::from_ptr(z_path)
+                    ),
+                ),
+            )
+        }
+    };
+    log::trace!("full_pathname name={}", path);
+
+    let name = match state.vfs.full_pathname(path).await.and_then(|name| {
+        CString::new(name.to_string())
+            .map_err(|_| std::io::Error::new(ErrorKind::Other, "name must not contain a nul byte"))
+    }) {
+        Ok(name) => name,
+        Err(err) => return state.set_last_error(sqlite3_sys::SQLITE_ERROR, err),
+    };
+
+    let name = name.to_bytes_with_nul();
+    if name.len() > n_out as usize || name.len() > MAX_PATH_LENGTH {
+        return state.set_last_error(
+            sqlite3_sys::SQLITE_CANTOPEN,
+            std::io::Error::new(ErrorKind::Other, "full pathname is too long"),
+        );
+    }
+    let out = std::slice::from_raw_parts_mut(z_out as *mut u8, name.len());
+    out.copy_from_slice(name);
+
+    sqlite3_sys::SQLITE_OK
+}
+
 /// Open a new file handler.
 pub unsafe extern "C" fn open<F: DatabaseHandle, V: Vfs<Handle = F>>(
     p_vfs: *mut sqlite3_sys::sqlite3_vfs,
@@ -295,52 +354,7 @@ pub unsafe extern "C" fn full_pathname<V: Vfs>(
     n_out: c_int,
     z_out: *mut c_char,
 ) -> c_int {
-    // #[cfg(feature = "sqlite_test")]
-    // if simulate_io_error() {
-    //     return sqlite3_sys::SQLITE_ERROR;
-    // }
-
-    let state = match vfs_state::<V>(p_vfs) {
-        Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
-    };
-
-    let path = match CStr::from_ptr(z_path).to_str() {
-        Ok(name) => name,
-        Err(_) => {
-            return state.set_last_error(
-                sqlite3_sys::SQLITE_ERROR,
-                std::io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "full_pathname failed: database must be valid utf8 (received: {:?})",
-                        CStr::from_ptr(z_path)
-                    ),
-                ),
-            )
-        }
-    };
-    log::trace!("full_pathname name={}", path);
-
-    let name = match state.vfs.full_pathname(path).and_then(|name| {
-        CString::new(name.to_string())
-            .map_err(|_| std::io::Error::new(ErrorKind::Other, "name must not contain a nul byte"))
-    }) {
-        Ok(name) => name,
-        Err(err) => return state.set_last_error(sqlite3_sys::SQLITE_ERROR, err),
-    };
-
-    let name = name.to_bytes_with_nul();
-    if name.len() > n_out as usize || name.len() > MAX_PATH_LENGTH {
-        return state.set_last_error(
-            sqlite3_sys::SQLITE_CANTOPEN,
-            std::io::Error::new(ErrorKind::Other, "full pathname is too long"),
-        );
-    }
-    let out = slice::from_raw_parts_mut(z_out as *mut u8, name.len());
-    out.copy_from_slice(name);
-
-    sqlite3_sys::SQLITE_OK
+    full_pathname_inner::<V>(p_vfs, z_path, n_out, z_out)
 }
 
 /// Open the dynamic library located at `z_path` and return a handle.
@@ -363,7 +377,7 @@ pub unsafe extern "C" fn dlopen<V>(
         }
     }
 
-    null_mut()
+    std::ptr::null_mut()
 }
 
 /// Populate the buffer `z_err_msg` (size `n_byte` bytes) with a human readable utf-8 string
@@ -447,7 +461,7 @@ pub unsafe extern "C" fn randomness<V: Vfs>(
 ) -> c_int {
     log::trace!("randomness");
 
-    let bytes = slice::from_raw_parts_mut(z_buf_out as *mut i8, n_byte as usize);
+    let bytes = std::slice::from_raw_parts_mut(z_buf_out as *mut i8, n_byte as usize);
     if cfg!(feature = "sqlite_test") {
         // During testing, the buffer is simply initialized to all zeroes for repeatability
         bytes.fill(0);
@@ -583,7 +597,7 @@ pub unsafe extern "C" fn get_last_error<V>(
         if msg.len() > n_byte as usize {
             return sqlite3_sys::SQLITE_ERROR;
         }
-        let out = slice::from_raw_parts_mut(z_err_msg as *mut u8, msg.len());
+        let out = std::slice::from_raw_parts_mut(z_err_msg as *mut u8, msg.len());
         out.copy_from_slice(msg);
 
         return *eno;
