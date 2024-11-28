@@ -1,3 +1,5 @@
+use sqlite_vfs::DatabaseHandle;
+
 pub struct WalIndex {}
 
 impl sqlite_vfs::wip::WalIndex for WalIndex {
@@ -5,19 +7,22 @@ impl sqlite_vfs::wip::WalIndex for WalIndex {
         false
     }
 
-    fn map(&mut self, region: u32) -> Result<[u8; 32768], std::io::Error> {
+    fn map<Handle: DatabaseHandle>(
+        &mut self,
+        region: u32,
+    ) -> Result<[u8; 32768], sqlite_vfs::error::Error<Handle::Error>> {
         todo!()
     }
 
-    fn lock(
+    fn lock<Handle: DatabaseHandle>(
         &mut self,
         locks: std::ops::Range<u8>,
         lock: sqlite_vfs::wip::WalIndexLock,
-    ) -> Result<bool, std::io::Error> {
+    ) -> Result<bool, sqlite_vfs::error::Error<Handle::Error>> {
         todo!()
     }
 
-    fn delete(self) -> Result<(), std::io::Error> {
+    fn delete<Handle: DatabaseHandle>(self) -> Result<(), sqlite_vfs::error::Error<Handle::Error>> {
         todo!()
     }
 }
