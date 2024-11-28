@@ -5,6 +5,7 @@ use rand::{Rng as _, RngCore};
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
 use sqlite_vfs::{OpenAccess, OpenKind, Vfs};
+use tokio::sync::RwLock;
 
 use crate::{error::Error, handle::Handle};
 
@@ -387,7 +388,7 @@ impl Inner {
 
 #[derive(Clone)]
 pub struct ThreeQLite {
-    pub inner: Inner,
+    pub inner: Arc<RwLock<Inner>>,
 }
 
 impl Vfs for ThreeQLite {
@@ -434,7 +435,7 @@ impl Vfs for ThreeQLite {
     }
 
     async fn delete(&self, db: &str) -> Result<(), sqlite_vfs::error::Error<Self::Error>> {
-        if let Err(e) = self.inner.s3.get_object().send().await {
+        if let Err(e) = self.inner.read().await.s3.get_object().send().await {
             return Err(Error::from_aws(e).into());
         }
 
