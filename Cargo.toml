@@ -14,3 +14,4 @@ sqlite3-sys = { version = "0.17.0", features = ["bundled"] }
 aws-config = "1.5.10"
 aws-sdk-s3 = "1.63.0"
 tokio = { version = "1.41.1", features = ["full"] }
+snafu = { version = "0.8.5", features = ["futures"] }

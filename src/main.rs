@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use snafu::prelude::*;
+use snafu::Snafu;
 use sqlite_vfs::{DatabaseHandle, Vfs};
 
 struct Inner {
@@ -17,8 +19,32 @@ pub struct Handle {
     obj_key: String,
 }
 
+pub struct WalIndex {}
+
+impl sqlite_vfs::wip::WalIndex for WalIndex {
+    fn enabled() -> bool {
+        false
+    }
+
+    fn map(&mut self, region: u32) -> Result<[u8; 32768], std::io::Error> {
+        todo!()
+    }
+
+    fn lock(
+        &mut self,
+        locks: std::ops::Range<u8>,
+        lock: sqlite_vfs::wip::WalIndexLock,
+    ) -> Result<bool, std::io::Error> {
+        todo!()
+    }
+
+    fn delete(self) -> Result<(), std::io::Error> {
+        todo!()
+    }
+}
+
 impl DatabaseHandle for Handle {
-    type WalIndex;
+    type WalIndex = WalIndex;
 
     fn size(&self) -> Result<u64, std::io::Error> {
         todo!()
@@ -58,7 +84,7 @@ impl DatabaseHandle for Handle {
 }
 
 impl Vfs for ThreeQLite {
-    type Handle;
+    type Handle = Handle;
 
     fn open(
         &self,
@@ -89,6 +115,17 @@ impl Vfs for ThreeQLite {
     }
 }
 
-fn main() {
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(whatever, display("{message}"))]
+    Whatever {
+        message: String,
+        #[snafu(source(from(Box<dyn std::error::Error>, Some)))]
+        source: Option<Box<dyn std::error::Error>>,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     todo!()
 }

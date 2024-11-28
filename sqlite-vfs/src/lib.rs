@@ -103,7 +103,6 @@ pub trait Vfs: Sync {
     }
 }
 
-#[doc(hidden)]
 pub mod wip {
     use super::*;
 
