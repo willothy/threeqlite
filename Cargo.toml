@@ -3,10 +3,14 @@ name = "threeqlite"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["sqlite-vfs"]
+
 [dependencies.sqlite-vfs]
 path = "./sqlite-vfs/"
 
 [dependencies]
+sqlite3-sys = { version = "0.17.0", features = ["bundled"] }
 aws-config = "1.5.10"
 aws-sdk-s3 = "1.63.0"
 tokio = { version = "1.41.1", features = ["full"] }
