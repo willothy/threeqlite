@@ -29,7 +29,7 @@ pub trait DatabaseHandle: Sync {
     type Error: std::error::Error;
 
     /// Return the current size in bytes of the database.
-    fn size(&self) -> impl Future<Output = Result<u64, crate::error::Error<Self::Error>>>;
+    fn size(&mut self) -> impl Future<Output = Result<u64, crate::error::Error<Self::Error>>>;
 
     /// Reads the exact number of byte required to fill `buf` from the given `offset`.
     fn read_exact_at(

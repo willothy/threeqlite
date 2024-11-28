@@ -8,11 +8,14 @@ use sqlite_vfs::{OpenAccess, OpenKind, Vfs};
 
 use crate::{error::Error, handle::Handle};
 
-struct Inner {
+#[derive(Clone)]
+pub struct Inner {
     pub s3: aws_sdk_s3::Client,
     pub metadata_lock: S3FileLock,
     pub metadata_filename: String,
     pub current_lock: Option<Vec<u8>>,
+    pub bucket: String,
+    pub db_filename: String,
     // bucket: String,
     // lock_file: String,
     // current_lock: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
@@ -36,6 +39,7 @@ pub struct ReaderMetadata {
     write_request: Option<Vec<u8>>,
 }
 
+#[derive(Clone)]
 pub struct S3FileLock {
     pub s3: aws_sdk_s3::Client,
     pub bucket: String,
@@ -134,6 +138,80 @@ impl Lock for S3FileLock {
 }
 
 impl Inner {
+    pub async fn read_exact_at(
+        &mut self,
+        offset: usize,
+        len: usize,
+    ) -> Result<Vec<u8>, snafu::Whatever> {
+        let _ = self.request_read_lock().await;
+        let data = self
+            .s3
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&self.db_filename)
+            .range(format!("bytes={}-{}", offset, offset + len))
+            .send()
+            .await;
+        let _ = self.release_read_lock().await;
+
+        match data {
+            Ok(obj) => {
+                if let Some(bytes) = obj.body.bytes() {
+                    Ok(bytes.to_vec())
+                } else {
+                    whatever!("Error reading data: no bytes")
+                }
+            }
+            Err(e) => whatever!("Error reading data: {}", e),
+        }
+    }
+
+    pub async fn write_at(&mut self, offset: usize, data: &[u8]) -> Result<(), snafu::Whatever> {
+        let _ = self.request_write_lock().await;
+        match self
+            .s3
+            .put_object()
+            .bucket(&self.metadata_lock.bucket)
+            .write_offset_bytes(offset as i64)
+            .key(&self.db_filename)
+            .body(data.to_vec().into())
+            .send()
+            .await
+        {
+            Ok(_) => {
+                let _ = self.release_write_lock().await;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.release_write_lock().await;
+                whatever!("Error writing data: {}", e)
+            }
+        }
+    }
+
+    pub async fn get_database_size(&mut self) -> Result<i64, snafu::Whatever> {
+        let _ = self.request_read_lock().await;
+        let size = self
+            .s3
+            .get_object()
+            .bucket(&self.metadata_lock.bucket)
+            .key(&self.metadata_lock.lock_file)
+            .send()
+            .await;
+        let _ = self.release_read_lock().await;
+
+        match size {
+            Ok(obj) => {
+                if let Some(size) = obj.content_length {
+                    Ok(size)
+                } else {
+                    whatever!("Error getting database size: no content length")
+                }
+            }
+            Err(e) => whatever!("Error getting database size: {}", e),
+        }
+    }
+
     pub async fn write_metadata(&self, meta: Metadata) -> Result<(), snafu::Whatever> {
         let bytes = bincode::serialize(&meta).unwrap();
         match self
@@ -309,7 +387,7 @@ impl Inner {
 
 #[derive(Clone)]
 pub struct ThreeQLite {
-    inner: Arc<Inner>,
+    pub inner: Inner,
 }
 
 impl Vfs for ThreeQLite {
