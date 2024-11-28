@@ -11,6 +11,8 @@ pub mod wal;
 fn main() -> Result<(), crate::error::Error> {
     dotenvy::dotenv().unwrap();
 
+    tracing_subscriber::fmt::init();
+
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let tq = rt.block_on(ThreeQLite::new());

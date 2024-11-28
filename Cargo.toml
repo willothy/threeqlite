@@ -23,3 +23,5 @@ rand = "0.8.5"
 tokio-stream = { version = "0.1.16", features = ["full"] }
 rusqlite = "0.32.1"
 dotenvy = "0.15.7"
+md5 = "0.7.0"
+base64 = "0.22.1"

@@ -2,6 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::types::ObjectLockLegalHoldStatus;
+use base64::Engine;
 use rand::{Rng as _, RngCore};
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
@@ -49,9 +50,14 @@ pub struct S3FileLock {
     pub current_lock: Option<Vec<u8>>,
 }
 
+fn prepare_md5(uuid: &[u8; 16]) -> String {
+    base64::prelude::BASE64_STANDARD.encode(md5::compute(uuid).as_ref())
+}
+
 impl Lock for S3FileLock {
     async fn request_lock(&mut self) -> Vec<u8> {
         let lock_uuid = uuid::Uuid::new_v4().to_bytes_le();
+        let mut i = 0;
         loop {
             match self
                 .s3
@@ -62,8 +68,11 @@ impl Lock for S3FileLock {
                 .await
             {
                 Ok(lock_status) => {
-                    if let Some(status) = lock_status.legal_hold {
-                        if let Some(status) = status.status {
+                    tracing::info!("Requesting lock ({i}): {lock_status:?}");
+                    i += 1;
+
+                    match lock_status.legal_hold.and_then(|status| status.status) {
+                        Some(status) => {
                             if status == ObjectLockLegalHoldStatus::Off {
                                 match self
                                     .s3
@@ -71,11 +80,13 @@ impl Lock for S3FileLock {
                                     .bucket(&self.bucket)
                                     .key(&self.lock_file)
                                     .body(lock_uuid.to_vec().into())
+                                    .content_md5(prepare_md5(&lock_uuid))
                                     .object_lock_legal_hold_status(ObjectLockLegalHoldStatus::On)
                                     .send()
                                     .await
                                 {
                                     Ok(_) => {
+                                        tracing::info!("put ok");
                                         // this might be unnecessary, but double checking for now
                                         {
                                             let val = self
@@ -94,8 +105,14 @@ impl Lock for S3FileLock {
                                                         let vect = lock_uuid.to_vec();
                                                         self.current_lock = Some(vect.clone());
                                                         return vect;
+                                                    } else {
+                                                        panic!("1")
                                                     }
+                                                } else {
+                                                    panic!("2")
                                                 }
+                                            } else {
+                                                panic!("3")
                                             }
                                         }
 
@@ -103,13 +120,48 @@ impl Lock for S3FileLock {
                                         // self.current_lock = Some(vect.clone());
                                         // return vect;
                                     }
-                                    Err(_set_legal_status_error) => {}
+                                    Err(e) => {
+                                        tracing::info!("put err: {e:?}");
+                                    }
+                                }
+                            } else {
+                                let val = self
+                                    .s3
+                                    .get_object()
+                                    .bucket(self.bucket.clone())
+                                    .key(self.lock_file.clone())
+                                    .send()
+                                    .await;
+                                if let Ok(obj) = val {
+                                    if let Some(bytes) = obj.body.bytes() {
+                                        if bytes == lock_uuid.to_vec()
+                                            && obj.object_lock_legal_hold_status
+                                                == Some(ObjectLockLegalHoldStatus::On)
+                                        {
+                                            let vect = lock_uuid.to_vec();
+                                            self.current_lock = Some(vect.clone());
+                                            return vect;
+                                        }
+                                    }
                                 }
                             }
                         }
+                        None => {
+                            panic!("bruhx skehfal.ksehfkaehfk");
+                        }
                     }
+
+                    // if lock_status
+                    //     .legal_hold
+                    //     .and_then(|status| status.status)
+                    //     .is_some_and(|status| status == ObjectLockLegalHoldStatus::Off)
+                    // {
+                    // } else {
+                    //     panic!("bruhx skehfal.ksehfkaehfk");
+                    // }
                 }
                 Err(legal_status_error) => {
+                    tracing::info!("err bruh");
                     // check if file exists
                     match self
                         .s3
@@ -119,7 +171,6 @@ impl Lock for S3FileLock {
                         .send()
                         .await
                     {
-                       
                         Err(get_obj_err) => {
                             match self
                                 .s3
@@ -137,13 +188,12 @@ impl Lock for S3FileLock {
                                     return vect;
                                 }
                                 Err(_) => {
-                                    panic!("Error creating lock file: {}", get_obj_err)
+                                    panic!("Error creating lock file: {:?}", get_obj_err)
                                 }
                             }
-                        },
+                        }
                         _ => {
-                            panic!("Error getting legal hold status / but also it seems to exist ok: {}", legal_status_error)
-                        
+                            panic!("Error getting legal hold status / but also it seems to exist ok: {:?}", legal_status_error)
                         }
                     }
                 }
