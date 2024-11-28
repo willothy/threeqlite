@@ -11,39 +11,39 @@ pub struct Handle {
 impl DatabaseHandle for Handle {
     type WalIndex = WalIndex;
 
-    fn size(&self) -> Result<u64, std::io::Error> {
+    async fn size(&self) -> Result<u64, std::io::Error> {
         todo!()
     }
 
-    fn read_exact_at(&mut self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
+    async fn read_exact_at(&mut self, buf: &mut [u8], offset: u64) -> Result<(), std::io::Error> {
         todo!()
     }
 
-    fn write_all_at(&mut self, buf: &[u8], offset: u64) -> Result<(), std::io::Error> {
+    async fn write_all_at(&mut self, buf: &[u8], offset: u64) -> Result<(), std::io::Error> {
         todo!()
     }
 
-    fn sync(&mut self, data_only: bool) -> Result<(), std::io::Error> {
+    async fn sync(&mut self, data_only: bool) -> Result<(), std::io::Error> {
         todo!()
     }
 
-    fn set_len(&mut self, size: u64) -> Result<(), std::io::Error> {
+    async fn set_len(&mut self, size: u64) -> Result<(), std::io::Error> {
         todo!()
     }
 
-    fn lock(&mut self, lock: sqlite_vfs::LockKind) -> Result<bool, std::io::Error> {
+    async fn lock(&mut self, lock: sqlite_vfs::LockKind) -> Result<bool, std::io::Error> {
         todo!()
     }
 
-    fn reserved(&mut self) -> Result<bool, std::io::Error> {
+    async fn reserved(&mut self) -> Result<bool, std::io::Error> {
         todo!()
     }
 
-    fn current_lock(&self) -> Result<sqlite_vfs::LockKind, std::io::Error> {
+    async fn current_lock(&self) -> Result<sqlite_vfs::LockKind, std::io::Error> {
         todo!()
     }
 
-    fn wal_index(&self, readonly: bool) -> Result<Self::WalIndex, std::io::Error> {
+    async fn wal_index(&self, readonly: bool) -> Result<Self::WalIndex, std::io::Error> {
         todo!()
     }
 }

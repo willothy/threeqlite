@@ -55,7 +55,7 @@ impl<V> State<V> {
 }
 
 impl<V, F: DatabaseHandle> FileExt<V, F> {
-    fn set_last_error(&mut self, no: i32, err: std::io::Error) -> i32 {
+    pub(crate) fn set_last_error(&mut self, no: i32, err: std::io::Error) -> i32 {
         // log::error!("{} ({})", err, no);
         *(self.last_error.lock().unwrap()) = Some((no, err));
         self.last_errno = no;

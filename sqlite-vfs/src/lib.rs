@@ -3,8 +3,8 @@
 //! using [register].
 
 pub mod io;
-pub mod vfs;
 pub mod state;
+pub mod vfs;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -18,6 +18,8 @@ use std::ptr::null_mut;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use state::{FileState, State};
 
 /// A file opened by [Vfs].
 pub trait DatabaseHandle: Sync {
@@ -94,7 +96,7 @@ pub trait Vfs: Sync {
     async fn random(&self, buffer: &mut [i8]);
 
     /// Sleep for `duration`. Return the duration actually slept.
-    async fn sleep(&self, duration: Duration) -> Duration;
+    fn sleep(&self, duration: Duration) -> Duration;
 
     /// Check access to `db`. The default implementation always returns `true`.
     async fn access(&self, _db: &str, _write: bool) -> Result<bool, std::io::Error> {
@@ -215,7 +217,6 @@ pub enum LockKind {
     Exclusive,
 }
 
-
 /// Register a virtual file system ([Vfs]) to SQLite.
 pub fn register<F: DatabaseHandle, V: Vfs<Handle = F>>(
     name: &str,
@@ -305,50 +306,6 @@ pub fn register<F: DatabaseHandle, V: Vfs<Handle = F>>(
 
 // TODO: add to [Vfs]?
 const MAX_PATH_LENGTH: usize = 512;
-
-#[repr(C)]
-struct FileState<V, F: DatabaseHandle> {
-    base: sqlite3_sys::sqlite3_file,
-    ext: MaybeUninit<FileExt<V, F>>,
-}
-
-#[repr(C)]
-struct FileExt<V, F: DatabaseHandle> {
-    vfs: Arc<V>,
-    vfs_name: CString,
-    db_name: String,
-    file: F,
-    delete_on_close: bool,
-    /// The last error; shared with the VFS.
-    last_error: Arc<Mutex<Option<(i32, std::io::Error)>>>,
-    /// The last error number of this file/connection (not shared with the VFS).
-    last_errno: i32,
-    wal_index: Option<(F::WalIndex, bool)>,
-    wal_index_regions: HashMap<u32, Pin<Box<[u8; 32768]>>>,
-    wal_index_locks: HashMap<u8, wip::WalIndexLock>,
-    has_exclusive_lock: bool,
-    id: usize,
-    chunk_size: Option<usize>,
-    persist_wal: bool,
-    powersafe_overwrite: bool,
-}
-
-impl<V> State<V> {
-    fn set_last_error(&mut self, no: i32, err: std::io::Error) -> i32 {
-        // log::error!("{} ({})", err, no);
-        *(self.last_error.lock().unwrap()) = Some((no, err));
-        no
-    }
-}
-
-impl<V, F: DatabaseHandle> FileExt<V, F> {
-    fn set_last_error(&mut self, no: i32, err: std::io::Error) -> i32 {
-        // log::error!("{} ({})", err, no);
-        *(self.last_error.lock().unwrap()) = Some((no, err));
-        self.last_errno = no;
-        no
-    }
-}
 
 impl OpenOptions {
     fn from_flags(flags: i32) -> Option<Self> {

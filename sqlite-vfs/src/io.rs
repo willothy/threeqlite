@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 use std::mem;
 
 use super::*;
-use state::file_state;
+use state::{file_state, null_ptr_error, FileState};
 use wip::WalIndex;
 
 #[tokio::main]
@@ -27,7 +27,8 @@ async fn close_inner<V: Vfs, F: DatabaseHandle>(file: *mut sqlite3_sys::sqlite3_
 }
 
 /// Read data from a file.
-pub async fn read<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async fn read_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     z_buf: *mut c_void,
     i_amt: c_int,
@@ -48,46 +49,7 @@ pub async fn read<V, F: DatabaseHandle>(
     // );
 
     let out = unsafe { slice::from_raw_parts_mut(z_buf as *mut u8, i_amt as usize) };
-    if let Err(err) = state.file.read_exact_at(out, i_ofst as u64) {
-        let kind = err.kind();
-        if kind == ErrorKind::UnexpectedEof {
-            return sqlite3_sys::SQLITE_IOERR_SHORT_READ;
-        } else {
-            return state.set_last_error(sqlite3_sys::SQLITE_IOERR_READ, err);
-        }
-    }
-
-    sqlite3_sys::SQLITE_OK
-}
-
-/// Close a file.
-pub unsafe extern "C" fn close<V: Vfs, F: DatabaseHandle>(
-    p_file: *mut sqlite3_sys::sqlite3_file,
-) -> c_int {
-    close_inner::<V, F>(p_file)
-}
-
-/// Read data from a file.
-pub unsafe extern "C" fn read<V, F: DatabaseHandle>(
-    p_file: *mut sqlite3_sys::sqlite3_file,
-    z_buf: *mut c_void,
-    i_amt: c_int,
-    i_ofst: sqlite3_sys::sqlite3_int64,
-) -> c_int {
-    let state = match file_state::<V, F>(p_file) {
-        Ok(f) => f,
-        Err(_) => return sqlite3_sys::SQLITE_IOERR_CLOSE,
-    };
-    log::trace!(
-        "[{}] read offset={} len={} ({})",
-        state.id,
-        i_ofst,
-        i_amt,
-        state.db_name
-    );
-
-    let out = slice::from_raw_parts_mut(z_buf as *mut u8, i_amt as usize);
-    if let Err(err) = state.file.read_exact_at(out, i_ofst as u64) {
+    if let Err(err) = state.file.read_exact_at(out, i_ofst as u64).await {
         let kind = err.kind();
         if kind == ErrorKind::UnexpectedEof {
             return sqlite3_sys::SQLITE_IOERR_SHORT_READ;
@@ -100,7 +62,8 @@ pub unsafe extern "C" fn read<V, F: DatabaseHandle>(
 }
 
 /// Write data to a file.
-pub unsafe extern "C" fn write<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn write_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     z: *const c_void,
     i_amt: c_int,
@@ -119,21 +82,7 @@ pub unsafe extern "C" fn write<V, F: DatabaseHandle>(
     );
 
     let data = slice::from_raw_parts(z as *mut u8, i_amt as usize);
-    let result = state.file.write_all_at(data, i_ofst as u64);
-
-    // #[cfg(feature = "sqlite_test")]
-    // let result = if simulate_io_error() {
-    //     Err(ErrorKind::Other.into())
-    // } else {
-    //     result
-    // };
-    //
-    // #[cfg(feature = "sqlite_test")]
-    // let result = if simulate_diskfull_error() {
-    //     Err(ErrorKind::WriteZero.into())
-    // } else {
-    //     result
-    // };
+    let result = state.file.write_all_at(data, i_ofst as u64).await;
 
     match result {
         Ok(_) => {}
@@ -147,7 +96,8 @@ pub unsafe extern "C" fn write<V, F: DatabaseHandle>(
 }
 
 /// Truncate a file.
-pub unsafe extern "C" fn truncate<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn truncate_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     size: sqlite3_sys::sqlite3_int64,
 ) -> c_int {
@@ -169,7 +119,7 @@ pub unsafe extern "C" fn truncate<V, F: DatabaseHandle>(
     //     return sqlite3_sys::SQLITE_IOERR_TRUNCATE;
     // }
 
-    if let Err(err) = state.file.set_len(size) {
+    if let Err(err) = state.file.set_len(size).await {
         return state.set_last_error(sqlite3_sys::SQLITE_IOERR_TRUNCATE, err);
     }
 
@@ -177,7 +127,8 @@ pub unsafe extern "C" fn truncate<V, F: DatabaseHandle>(
 }
 
 /// Persist changes to a file.
-pub unsafe extern "C" fn sync<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn sync_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     flags: c_int,
 ) -> c_int {
@@ -187,32 +138,20 @@ pub unsafe extern "C" fn sync<V, F: DatabaseHandle>(
     };
     log::trace!("[{}] sync ({})", state.id, state.db_name);
 
-    // #[cfg(feature = "sqlite_test")]
-    // {
-    //     let is_full_sync = flags & 0x0F == sqlite3_sys::SQLITE_SYNC_FULL;
-    //     if is_full_sync {
-    //         sqlite3_sys::sqlite3_inc_fullsync_count();
-    //     }
-    //     sqlite3_sys::sqlite3_inc_sync_count();
-    // }
-
     if let Err(err) = state
         .file
         .sync(flags & sqlite3_sys::SQLITE_SYNC_DATAONLY > 0)
+        .await
     {
         return state.set_last_error(sqlite3_sys::SQLITE_IOERR_FSYNC, err);
     }
-
-    // #[cfg(feature = "sqlite_test")]
-    // if simulate_io_error() {
-    //     return sqlite3_sys::SQLITE_ERROR;
-    // }
 
     sqlite3_sys::SQLITE_OK
 }
 
 /// Return the current file-size of a file.
-pub unsafe extern "C" fn file_size<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn file_size_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     p_size: *mut sqlite3_sys::sqlite3_int64,
 ) -> c_int {
@@ -222,7 +161,7 @@ pub unsafe extern "C" fn file_size<V, F: DatabaseHandle>(
     };
     log::trace!("[{}] file_size ({})", state.id, state.db_name);
 
-    if let Err(err) = state.file.size().and_then(|n| {
+    if let Err(err) = state.file.size().await.and_then(|n| {
         let p_size: &mut sqlite3_sys::sqlite3_int64 = p_size.as_mut().ok_or_else(null_ptr_error)?;
         *p_size = n as sqlite3_sys::sqlite3_int64;
         Ok(())
@@ -239,7 +178,8 @@ pub unsafe extern "C" fn file_size<V, F: DatabaseHandle>(
 }
 
 /// Lock a file.
-pub unsafe extern "C" fn lock<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn lock_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     e_lock: c_int,
 ) -> c_int {
@@ -253,7 +193,7 @@ pub unsafe extern "C" fn lock<V, F: DatabaseHandle>(
         Some(lock) => lock,
         None => return sqlite3_sys::SQLITE_IOERR_LOCK,
     };
-    match state.file.lock(lock) {
+    match state.file.lock(lock).await {
         Ok(true) => {
             state.has_exclusive_lock = lock == LockKind::Exclusive;
             log::trace!("[{}] lock={:?} ({})", state.id, lock, state.db_name);
@@ -302,7 +242,8 @@ pub unsafe extern "C" fn lock<V, F: DatabaseHandle>(
 }
 
 /// Unlock a file.
-pub unsafe extern "C" fn unlock<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn unlock_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     e_lock: c_int,
 ) -> c_int {
@@ -316,7 +257,7 @@ pub unsafe extern "C" fn unlock<V, F: DatabaseHandle>(
         Some(lock) => lock,
         None => return sqlite3_sys::SQLITE_IOERR_UNLOCK,
     };
-    match state.file.unlock(lock) {
+    match state.file.unlock(lock).await {
         Ok(true) => {
             state.has_exclusive_lock = lock == LockKind::Exclusive;
             log::trace!("[{}] unlock={:?} ({})", state.id, lock, state.db_name);
@@ -328,7 +269,8 @@ pub unsafe extern "C" fn unlock<V, F: DatabaseHandle>(
 }
 
 /// Check if another file-handle holds a [LockKind::Reserved] lock on a file.
-pub unsafe extern "C" fn check_reserved_lock<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn check_reserved_lock_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     p_res_out: *mut c_int,
 ) -> c_int {
@@ -343,7 +285,7 @@ pub unsafe extern "C" fn check_reserved_lock<V, F: DatabaseHandle>(
     //     return sqlite3_sys::SQLITE_IOERR_CHECKRESERVEDLOCK;
     // }
 
-    if let Err(err) = state.file.reserved().and_then(|is_reserved| {
+    if let Err(err) = state.file.reserved().await.and_then(|is_reserved| {
         let p_res_out: &mut c_int = p_res_out.as_mut().ok_or_else(null_ptr_error)?;
         *p_res_out = is_reserved as c_int;
         Ok(())
@@ -355,7 +297,8 @@ pub unsafe extern "C" fn check_reserved_lock<V, F: DatabaseHandle>(
 }
 
 /// File control method. For custom operations on a mem-file.
-pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn file_control_inner<V: Vfs, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     op: c_int,
     p_arg: *mut c_void,
@@ -380,7 +323,7 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
         sqlite3_sys::SQLITE_FCNTL_SYNC_OMITTED => sqlite3_sys::SQLITE_NOTFOUND,
 
         // Used for debugging. Write current state of the lock into (int)pArg.
-        sqlite3_sys::SQLITE_FCNTL_LOCKSTATE => match state.file.current_lock() {
+        sqlite3_sys::SQLITE_FCNTL_LOCKSTATE => match state.file.current_lock().await {
             Ok(lock) => {
                 if let Some(p_arg) = (p_arg as *mut i32).as_mut() {
                     *p_arg = lock as i32;
@@ -422,7 +365,7 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
             // #[cfg(feature = "sqlite_test")]
             // let _benign = simulate_io_error_benign();
 
-            let current = match state.file.size() {
+            let current = match state.file.size().await {
                 Ok(size) => size,
                 Err(err) => return state.set_last_error(sqlite3_sys::SQLITE_ERROR, err),
             };
@@ -434,10 +377,10 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
             if let Some(chunk_size) = state.chunk_size {
                 let chunk_size = chunk_size as u64;
                 let size = ((size_hint + chunk_size - 1) / chunk_size) * chunk_size;
-                if let Err(err) = state.file.set_len(size) {
+                if let Err(err) = state.file.set_len(size).await {
                     return state.set_last_error(sqlite3_sys::SQLITE_IOERR_TRUNCATE, err);
                 }
-            } else if let Err(err) = state.file.set_len(size_hint) {
+            } else if let Err(err) = state.file.set_len(size_hint).await {
                 return state.set_last_error(sqlite3_sys::SQLITE_IOERR_TRUNCATE, err);
             }
 
@@ -467,7 +410,7 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
                 }
             };
 
-            if let Err(err) = state.file.set_chunk_size(chunk_size) {
+            if let Err(err) = state.file.set_chunk_size(chunk_size).await {
                 return state.set_last_error(sqlite3_sys::SQLITE_ERROR, err);
             }
 
@@ -534,7 +477,7 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
         // Generate a temporary filename. Not implemented.
         sqlite3_sys::SQLITE_FCNTL_TEMPFILENAME => {
             if let Some(p_arg) = (p_arg as *mut *const c_char).as_mut() {
-                let name = state.vfs.temporary_name();
+                let name = state.vfs.temporary_name().await;
                 // unwrap() is fine as os strings are an arbitrary sequences of non-zero bytes
                 let name = CString::new(name.as_bytes()).unwrap();
                 let name = ManuallyDrop::new(name);
@@ -558,7 +501,7 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
 
         // Check whether or not the file has been renamed, moved, or deleted since it was first
         // opened.
-        sqlite3_sys::SQLITE_FCNTL_HAS_MOVED => match state.file.moved() {
+        sqlite3_sys::SQLITE_FCNTL_HAS_MOVED => match state.file.moved().await {
             Ok(moved) => {
                 if let Some(p_arg) = (p_arg as *mut i32).as_mut() {
                     *p_arg = moved as i32;
@@ -633,6 +576,90 @@ pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
     }
 }
 
+/// Close a file.
+pub unsafe extern "C" fn close<V: Vfs, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+) -> c_int {
+    close_inner::<V, F>(p_file)
+}
+
+/// Read data from a file.
+pub unsafe extern "C" fn read<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    z_buf: *mut c_void,
+    i_amt: c_int,
+    i_ofst: sqlite3_sys::sqlite3_int64,
+) -> c_int {
+    read_inner::<V, F>(p_file, z_buf, i_amt, i_ofst)
+}
+
+/// Write data to a file.
+pub unsafe extern "C" fn write<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    z: *const c_void,
+    i_amt: c_int,
+    i_ofst: sqlite3_sys::sqlite3_int64,
+) -> c_int {
+    write_inner::<V, F>(p_file, z, i_amt, i_ofst)
+}
+
+/// Truncate a file.
+pub unsafe extern "C" fn truncate<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    size: sqlite3_sys::sqlite3_int64,
+) -> c_int {
+    truncate_inner::<V, F>(p_file, size)
+}
+
+/// Persist changes to a file.
+pub unsafe extern "C" fn sync<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    flags: c_int,
+) -> c_int {
+    sync_inner::<V, F>(p_file, flags)
+}
+
+/// Return the current file-size of a file.
+pub unsafe extern "C" fn file_size<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    p_size: *mut sqlite3_sys::sqlite3_int64,
+) -> c_int {
+    file_size_inner::<V, F>(p_file, p_size)
+}
+
+/// Lock a file.
+pub unsafe extern "C" fn lock<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    e_lock: c_int,
+) -> c_int {
+    lock_inner::<V, F>(p_file, e_lock)
+}
+
+/// Unlock a file.
+pub unsafe extern "C" fn unlock<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    e_lock: c_int,
+) -> c_int {
+    unlock_inner::<V, F>(p_file, e_lock)
+}
+
+/// Check if another file-handle holds a [LockKind::Reserved] lock on a file.
+pub unsafe extern "C" fn check_reserved_lock<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    p_res_out: *mut c_int,
+) -> c_int {
+    check_reserved_lock_inner::<V, F>(p_file, p_res_out)
+}
+
+/// File control method. For custom operations on a mem-file.
+pub unsafe extern "C" fn file_control<V: Vfs, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    op: c_int,
+    p_arg: *mut c_void,
+) -> c_int {
+    file_control_inner::<V, F>(p_file, op, p_arg)
+}
+
 /// Return the sector-size in bytes for a file.
 pub unsafe extern "C" fn sector_size<F>(_p_file: *mut sqlite3_sys::sqlite3_file) -> c_int {
     log::trace!("sector_size");
@@ -664,7 +691,8 @@ pub unsafe extern "C" fn device_characteristics<V, F: DatabaseHandle>(
 }
 
 /// Create a shared memory file mapping.
-pub unsafe extern "C" fn shm_map<V, F: DatabaseHandle>(
+#[tokio::main]
+pub async unsafe fn shm_map_inner<V, F: DatabaseHandle>(
     p_file: *mut sqlite3_sys::sqlite3_file,
     region_ix: i32,
     region_size: i32,
@@ -708,22 +736,29 @@ pub unsafe extern "C" fn shm_map<V, F: DatabaseHandle>(
                 match state
                     .file
                     .wal_index(false)
+                    .await
                     .map(|wal_index| (wal_index, false))
-                    .or_else(|err| {
-                        if err.kind() == ErrorKind::PermissionDenied {
-                            // Try again as readonly
-                            state
-                                .file
-                                .wal_index(true)
-                                .map(|wal_index| (wal_index, true))
-                                .map_err(|_| err)
-                        } else {
-                            Err(err)
-                        }
-                    }) {
+                {
                     Ok((wal_index, readonly)) => (wal_index, readonly),
                     Err(err) => {
-                        return state.set_last_error(sqlite3_sys::SQLITE_IOERR_SHMMAP, err);
+                        if err.kind() == ErrorKind::PermissionDenied {
+                            // Try again as readonly
+                            match state
+                                .file
+                                .wal_index(true)
+                                .await
+                                .map(|wal_index| (wal_index, true))
+                                .map_err(|_| err)
+                            {
+                                Ok(res) => res,
+                                Err(err) => {
+                                    return state
+                                        .set_last_error(sqlite3_sys::SQLITE_IOERR_SHMMAP, err)
+                                }
+                            }
+                        } else {
+                            return state.set_last_error(sqlite3_sys::SQLITE_IOERR_SHMMAP, err);
+                        }
                     }
                 },
             );
@@ -753,6 +788,17 @@ pub unsafe extern "C" fn shm_map<V, F: DatabaseHandle>(
     } else {
         sqlite3_sys::SQLITE_OK
     }
+}
+
+/// Create a shared memory file mapping.
+pub unsafe extern "C" fn shm_map<V, F: DatabaseHandle>(
+    p_file: *mut sqlite3_sys::sqlite3_file,
+    region_ix: i32,
+    region_size: i32,
+    b_extend: i32,
+    pp: *mut *mut c_void,
+) -> i32 {
+    shm_map_inner::<V, F>(p_file, region_ix, region_size, b_extend, pp)
 }
 
 /// Perform locking on a shared-memory segment.
