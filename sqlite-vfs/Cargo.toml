@@ -13,6 +13,7 @@ keywords = ["sqlite", "vfs"]
 log = "0.4"
 sqlite3-sys = { version = "0.17.0", features = ["bundled"] }
 time = "0.3"
+tokio = { version = "1.41.1", features = ["full"] }
 
 [features]
 default = []
