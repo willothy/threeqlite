@@ -11,14 +11,15 @@ struct Inner {
     s3: aws_sdk_s3::Client,
     metadata_lock: S3FileLock,
     metadata_filename: String,
+    current_lock: Option<Vec<u8>>,
     // bucket: String,
     // lock_file: String,
     // current_lock: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
 pub trait Lock {
-    async fn request_lock(&self) -> Vec<u8>;
-    async fn release_lock(&self) -> Result<(), snafu::Whatever>;
+    async fn request_lock(&mut self) -> Vec<u8>;
+    async fn release_lock(&mut self) -> Result<(), snafu::Whatever>;
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -38,11 +39,11 @@ pub struct S3FileLock {
     pub s3: aws_sdk_s3::Client,
     pub bucket: String,
     pub lock_file: String,
-    pub current_lock: std::sync::Mutex<Option<Vec<u8>>>,
+    pub current_lock: Option<Vec<u8>>,
 }
 
 impl Lock for S3FileLock {
-    async fn request_lock(&self) -> Vec<u8> {
+    async fn request_lock(&mut self) -> Vec<u8> {
         let lock_uuid = uuid::Uuid::new_v4().to_bytes_le();
         loop {
             match self
@@ -69,24 +70,29 @@ impl Lock for S3FileLock {
                                 {
                                     Ok(_) => {
                                         let vect = lock_uuid.to_vec();
-                                        *self.current_lock.lock().unwrap() = Some(vect.clone());
+                                        self.current_lock = Some(vect.clone());
                                         return vect;
                                     }
-                                    Err(_) => {
-
-                                        // retry
+                                    Err(_set_legal_status_error) => {
+                                        
+                                        
                                     }
                                 }
                             }
                         }
                     }
                 }
-                Err(_) => {}
+                Err(legal_status_error) => {
+                    // this might happen every time, if no file exists
+                    eprintln!("Error setting legal hold status: {}", legal_status_error);
+                }
             }
+            // for debugging, remove this later
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
-    async fn release_lock(&self) -> Result<(), snafu::Whatever> {
+    async fn release_lock(&mut self) -> Result<(), snafu::Whatever> {
         match self
             .s3
             .put_object()
@@ -98,7 +104,7 @@ impl Lock for S3FileLock {
             .await
         {
             Ok(_) => {
-                *self.current_lock.lock().unwrap() = None;
+                self.current_lock = None;
                 Ok(())
             }
             Err(e) => whatever!("Error releasing lock: {}", e),
@@ -156,66 +162,128 @@ impl Inner {
             tokio::time::sleep(poll_delay).await;
         }
     }
-    pub async fn request_write_lock(&self) -> Result<Vec<u8>, snafu::Whatever> {
+
+    pub async fn release_read_lock(&mut self) -> Result<(), snafu::Whatever> {
+        let _ = self.metadata_lock.request_lock().await;
+        if let Metadata::Reader(read_metadata) = self.read_metadata().await? {
+            let lock_uuid = self.current_lock.clone().unwrap();
+            let new_readers = read_metadata
+                .readers
+                .into_iter()
+                .filter(|v| v != &lock_uuid)
+                .collect();
+
+            self.write_metadata(Metadata::Reader(ReaderMetadata {
+                readers: new_readers,
+                write_request: read_metadata.write_request,
+            }))
+            .await?;
+            self.metadata_lock.release_lock().await?;
+            self.current_lock = None;
+            // Ok(())
+            Ok(())
+        } else {
+            self.metadata_lock.release_lock().await?;
+            self.current_lock = None;
+            whatever!("Error releasing read lock, no reader metadata found")
+        }
+    }
+
+
+    pub async fn release_write_lock(&mut self) -> Result<(), snafu::Whatever> {
+        let _ = self.metadata_lock.request_lock().await;
+        if let Metadata::Writer(lock_uuid) = self.read_metadata().await? {
+            if let Some(current_lock) = self.current_lock.clone() {
+                if current_lock == lock_uuid {
+                    self.write_metadata(Metadata::None).await?;
+                    self.metadata_lock.release_lock().await?;
+                    self.current_lock = None;
+                    return Ok(());
+                }
+            }
+        }
+        self.metadata_lock.release_lock().await?;
+        self.current_lock = None;
+        whatever!("Error releasing write lock, no writer metadata found")
+    }
+
+    pub async fn request_read_lock(&mut self) -> Result<(), snafu::Whatever> {
         let lock_uuid = uuid::Uuid::new_v4().to_bytes_le();
 
         loop {
             let _ = self.metadata_lock.request_lock().await;
 
-            let current_metadata = self.read_metadata().await?;
-            match current_metadata {
-                Metadata::None => {
-                    let metadata = Metadata::Writer(lock_uuid.to_vec());
-                    self.write_metadata(metadata).await?;
-                }
-                Metadata::Writer(writer) => {
-                    if writer == lock_uuid.to_vec() {
-                        return Ok(lock_uuid.to_vec());
-                    }
-                    // for debugging, so the lock is not competed over
-                    self.metadata_lock.release_lock().await?;
-                    // read file until it is free
-                    self.read_metadata_until(
-                        Box::new(|meta| {
-                            if let Metadata::None = meta {
-                                true
-                            } else {
-                                false
-                            }
-                        }),
-                        Duration::from_millis(10),
-                    )
-                    .await?;
-                    // loop {
-                    //     if let Metadata::None = self.read_metadata().await? {
-                    //         break;
-                    //     }
-                    //     std::thread::sleep(std::time::Duration::from_millis(10));
-                    // }
-                    continue;
-
-                    // metadata = Metadata::Writer(lock_uuid.to_vec());
-                }
-                Metadata::Reader(read_metadata) => {
-                    if read_metadata.readers.is_empty()
-                        && read_metadata
-                            .write_request
-                            .clone()
-                            .is_none_or(|v| v == lock_uuid.to_vec())
-                    {
-                        Metadata::Writer(lock_uuid.to_vec());
-                    } else if read_metadata.write_request.is_none() {
-                        Metadata::Reader(ReaderMetadata {
-                            readers: read_metadata.readers,
-                            write_request: Some(lock_uuid.to_vec()),
-                        });
-                    }
-
-                    // metadata = Metadata::Writer(lock_uuid.to_vec());
-                }
+            let ready_for_reader = |meta: &Metadata| match meta {
+                Metadata::None => true,
+                Metadata::Writer(_) => false,
+                Metadata::Reader(read_metadata) => read_metadata.write_request.is_none(),
             };
+
+            let meta = self.read_metadata().await?;
+            if ready_for_reader(&meta) {
+                let mut current_readers = match meta {
+                    Metadata::None => vec![],
+                    Metadata::Writer(_) => vec![],
+                    Metadata::Reader(read_metadata) => read_metadata.readers,
+                };
+                current_readers.push(lock_uuid.to_vec());
+                self.write_metadata(Metadata::Reader(ReaderMetadata {
+                    readers: current_readers,
+                    write_request: None,
+                }))
+                .await?;
+                break;
+            }
         }
-        todo!()
+        self.current_lock = Some(lock_uuid.to_vec());
+        Ok(())
+    }
+
+    pub async fn request_write_lock(&mut self) -> Result<(), snafu::Whatever> {
+        let lock_uuid = uuid::Uuid::new_v4().to_bytes_le();
+
+        let ready_for_writer = |meta: Metadata| match meta {
+            Metadata::None => true,
+            Metadata::Writer(_) => false,
+            Metadata::Reader(read_metadata) => read_metadata.write_request.is_none(),
+        };
+
+        loop {
+            let _ = self.metadata_lock.request_lock().await;
+
+            let current_metadata = self.read_metadata().await?;
+
+            if ready_for_writer(current_metadata.clone()) {
+                self.write_metadata(Metadata::Writer(lock_uuid.to_vec()))
+                    .await?;
+                return Ok(lock_uuid.to_vec());
+            } else if let Metadata::Reader(read_metadata) = current_metadata {
+                if read_metadata.readers.is_empty()
+                    && read_metadata
+                        .write_request
+                        .clone()
+                        .is_none_or(|v| v == lock_uuid.to_vec())
+                {
+                    self.write_metadata(Metadata::Writer(lock_uuid.to_vec()))
+                        .await?;
+                    break;
+                } else if read_metadata.write_request.is_none() {
+                    self.write_metadata(Metadata::Reader(ReaderMetadata {
+                        readers: read_metadata.readers,
+                        write_request: Some(lock_uuid.to_vec()),
+                    }))
+                    .await?;
+                    break;
+                    // return Ok(lock_uuid.to_vec());
+                }
+            }
+
+            self.metadata_lock.release_lock().await?;
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        self.current_lock = Some(lock_uuid.to_vec());
+        Ok(())
     }
 }
 
