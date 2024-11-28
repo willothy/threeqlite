@@ -287,7 +287,7 @@ pub fn register<F: DatabaseHandle<Error = V::Error>, V: Vfs<Handle = F>>(
     vfs: V,
     as_default: bool,
 ) -> Result<(), RegisterError> {
-    let io_methods = sqlite3_sys::sqlite3_io_methods {
+    let io_methods = libsqlite3_sys::sqlite3_io_methods {
         iVersion: 2,
         xClose: Some(io::close::<V, F>),
         xRead: Some(io::read::<V, F>),
@@ -314,12 +314,12 @@ pub fn register<F: DatabaseHandle<Error = V::Error>, V: Vfs<Handle = F>>(
         name,
         vfs: Arc::new(vfs),
         #[cfg(any(feature = "syscall", feature = "loadext"))]
-        parent_vfs: unsafe { sqlite3_sys::sqlite3_vfs_find(std::ptr::null_mut()) },
+        parent_vfs: unsafe { libsqlite3_sys::sqlite3_vfs_find(std::ptr::null_mut()) },
         io_methods,
         last_error: Default::default(),
         next_id: 0,
     }));
-    let vfs = Box::into_raw(Box::new(sqlite3_sys::sqlite3_vfs {
+    let vfs = Box::into_raw(Box::new(libsqlite3_sys::sqlite3_vfs {
         #[cfg(not(feature = "syscall"))]
         iVersion: 2,
         #[cfg(feature = "syscall")]
@@ -358,8 +358,8 @@ pub fn register<F: DatabaseHandle<Error = V::Error>, V: Vfs<Handle = F>>(
         xNextSystemCall: Some(vfs::next_system_call::<V>),
     }));
 
-    let result = unsafe { sqlite3_sys::sqlite3_vfs_register(vfs, as_default as i32) };
-    if result != sqlite3_sys::SQLITE_OK {
+    let result = unsafe { libsqlite3_sys::sqlite3_vfs_register(vfs, as_default as i32) };
+    if result != libsqlite3_sys::SQLITE_OK {
         return Err(RegisterError::Register(result));
     }
 
@@ -376,7 +376,7 @@ impl OpenOptions {
         Some(OpenOptions {
             kind: OpenKind::from_flags(flags)?,
             access: OpenAccess::from_flags(flags)?,
-            delete_on_close: flags & sqlite3_sys::SQLITE_OPEN_DELETEONCLOSE > 0,
+            delete_on_close: flags & libsqlite3_sys::SQLITE_OPEN_DELETEONCLOSE > 0,
         })
     }
 
@@ -384,7 +384,7 @@ impl OpenOptions {
         self.kind.to_flags()
             | self.access.to_flags()
             | if self.delete_on_close {
-                sqlite3_sys::SQLITE_OPEN_DELETEONCLOSE
+                libsqlite3_sys::SQLITE_OPEN_DELETEONCLOSE
             } else {
                 0
             }
@@ -394,28 +394,36 @@ impl OpenOptions {
 impl OpenKind {
     fn from_flags(flags: i32) -> Option<Self> {
         match flags {
-            flags if flags & sqlite3_sys::SQLITE_OPEN_MAIN_DB > 0 => Some(Self::MainDb),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_MAIN_JOURNAL > 0 => Some(Self::MainJournal),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_TEMP_DB > 0 => Some(Self::TempDb),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_TEMP_JOURNAL > 0 => Some(Self::TempJournal),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_TRANSIENT_DB > 0 => Some(Self::TransientDb),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_SUBJOURNAL > 0 => Some(Self::SubJournal),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_SUPER_JOURNAL > 0 => Some(Self::SuperJournal),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_WAL > 0 => Some(Self::Wal),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_MAIN_DB > 0 => Some(Self::MainDb),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_MAIN_JOURNAL > 0 => {
+                Some(Self::MainJournal)
+            }
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_TEMP_DB > 0 => Some(Self::TempDb),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_TEMP_JOURNAL > 0 => {
+                Some(Self::TempJournal)
+            }
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_TRANSIENT_DB > 0 => {
+                Some(Self::TransientDb)
+            }
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_SUBJOURNAL > 0 => Some(Self::SubJournal),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_SUPER_JOURNAL > 0 => {
+                Some(Self::SuperJournal)
+            }
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_WAL > 0 => Some(Self::Wal),
             _ => None,
         }
     }
 
     fn to_flags(self) -> i32 {
         match self {
-            OpenKind::MainDb => sqlite3_sys::SQLITE_OPEN_MAIN_DB,
-            OpenKind::MainJournal => sqlite3_sys::SQLITE_OPEN_MAIN_JOURNAL,
-            OpenKind::TempDb => sqlite3_sys::SQLITE_OPEN_TEMP_DB,
-            OpenKind::TempJournal => sqlite3_sys::SQLITE_OPEN_TEMP_JOURNAL,
-            OpenKind::TransientDb => sqlite3_sys::SQLITE_OPEN_TRANSIENT_DB,
-            OpenKind::SubJournal => sqlite3_sys::SQLITE_OPEN_SUBJOURNAL,
-            OpenKind::SuperJournal => sqlite3_sys::SQLITE_OPEN_SUPER_JOURNAL,
-            OpenKind::Wal => sqlite3_sys::SQLITE_OPEN_WAL,
+            OpenKind::MainDb => libsqlite3_sys::SQLITE_OPEN_MAIN_DB,
+            OpenKind::MainJournal => libsqlite3_sys::SQLITE_OPEN_MAIN_JOURNAL,
+            OpenKind::TempDb => libsqlite3_sys::SQLITE_OPEN_TEMP_DB,
+            OpenKind::TempJournal => libsqlite3_sys::SQLITE_OPEN_TEMP_JOURNAL,
+            OpenKind::TransientDb => libsqlite3_sys::SQLITE_OPEN_TRANSIENT_DB,
+            OpenKind::SubJournal => libsqlite3_sys::SQLITE_OPEN_SUBJOURNAL,
+            OpenKind::SuperJournal => libsqlite3_sys::SQLITE_OPEN_SUPER_JOURNAL,
+            OpenKind::Wal => libsqlite3_sys::SQLITE_OPEN_WAL,
         }
     }
 }
@@ -424,29 +432,29 @@ impl OpenAccess {
     fn from_flags(flags: i32) -> Option<Self> {
         match flags {
             flags
-                if (flags & sqlite3_sys::SQLITE_OPEN_CREATE > 0)
-                    && (flags & sqlite3_sys::SQLITE_OPEN_EXCLUSIVE > 0) =>
+                if (flags & libsqlite3_sys::SQLITE_OPEN_CREATE > 0)
+                    && (flags & libsqlite3_sys::SQLITE_OPEN_EXCLUSIVE > 0) =>
             {
                 Some(Self::CreateNew)
             }
-            flags if flags & sqlite3_sys::SQLITE_OPEN_CREATE > 0 => Some(Self::Create),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_READWRITE > 0 => Some(Self::Write),
-            flags if flags & sqlite3_sys::SQLITE_OPEN_READONLY > 0 => Some(Self::Read),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_CREATE > 0 => Some(Self::Create),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_READWRITE > 0 => Some(Self::Write),
+            flags if flags & libsqlite3_sys::SQLITE_OPEN_READONLY > 0 => Some(Self::Read),
             _ => None,
         }
     }
 
     fn to_flags(self) -> i32 {
         match self {
-            OpenAccess::Read => sqlite3_sys::SQLITE_OPEN_READONLY,
-            OpenAccess::Write => sqlite3_sys::SQLITE_OPEN_READWRITE,
+            OpenAccess::Read => libsqlite3_sys::SQLITE_OPEN_READONLY,
+            OpenAccess::Write => libsqlite3_sys::SQLITE_OPEN_READWRITE,
             OpenAccess::Create => {
-                sqlite3_sys::SQLITE_OPEN_READWRITE | sqlite3_sys::SQLITE_OPEN_CREATE
+                libsqlite3_sys::SQLITE_OPEN_READWRITE | libsqlite3_sys::SQLITE_OPEN_CREATE
             }
             OpenAccess::CreateNew => {
-                sqlite3_sys::SQLITE_OPEN_READWRITE
-                    | sqlite3_sys::SQLITE_OPEN_CREATE
-                    | sqlite3_sys::SQLITE_OPEN_EXCLUSIVE
+                libsqlite3_sys::SQLITE_OPEN_READWRITE
+                    | libsqlite3_sys::SQLITE_OPEN_CREATE
+                    | libsqlite3_sys::SQLITE_OPEN_EXCLUSIVE
             }
         }
     }
@@ -455,22 +463,22 @@ impl OpenAccess {
 impl LockKind {
     fn from_i32(lock: i32) -> Option<Self> {
         Some(match lock {
-            sqlite3_sys::SQLITE_LOCK_NONE => Self::None,
-            sqlite3_sys::SQLITE_LOCK_SHARED => Self::Shared,
-            sqlite3_sys::SQLITE_LOCK_RESERVED => Self::Reserved,
-            sqlite3_sys::SQLITE_LOCK_PENDING => Self::Pending,
-            sqlite3_sys::SQLITE_LOCK_EXCLUSIVE => Self::Exclusive,
+            libsqlite3_sys::SQLITE_LOCK_NONE => Self::None,
+            libsqlite3_sys::SQLITE_LOCK_SHARED => Self::Shared,
+            libsqlite3_sys::SQLITE_LOCK_RESERVED => Self::Reserved,
+            libsqlite3_sys::SQLITE_LOCK_PENDING => Self::Pending,
+            libsqlite3_sys::SQLITE_LOCK_EXCLUSIVE => Self::Exclusive,
             _ => return None,
         })
     }
 
     fn to_i32(self) -> i32 {
         match self {
-            Self::None => sqlite3_sys::SQLITE_LOCK_NONE,
-            Self::Shared => sqlite3_sys::SQLITE_LOCK_SHARED,
-            Self::Reserved => sqlite3_sys::SQLITE_LOCK_RESERVED,
-            Self::Pending => sqlite3_sys::SQLITE_LOCK_PENDING,
-            Self::Exclusive => sqlite3_sys::SQLITE_LOCK_EXCLUSIVE,
+            Self::None => libsqlite3_sys::SQLITE_LOCK_NONE,
+            Self::Shared => libsqlite3_sys::SQLITE_LOCK_SHARED,
+            Self::Reserved => libsqlite3_sys::SQLITE_LOCK_RESERVED,
+            Self::Pending => libsqlite3_sys::SQLITE_LOCK_PENDING,
+            Self::Exclusive => libsqlite3_sys::SQLITE_LOCK_EXCLUSIVE,
         }
     }
 }

@@ -13,15 +13,15 @@ pub struct State<V: Vfs> {
     pub name: CString,
     pub vfs: Arc<V>,
     #[cfg(any(feature = "syscall", feature = "loadext"))]
-    parent_vfs: *mut sqlite3_sys::sqlite3_vfs,
-    pub io_methods: sqlite3_sys::sqlite3_io_methods,
+    parent_vfs: *mut libsqlite3_sys::sqlite3_vfs,
+    pub io_methods: libsqlite3_sys::sqlite3_io_methods,
     pub last_error: Arc<Mutex<Option<(i32, crate::error::Error<V::Error>)>>>,
     pub next_id: usize,
 }
 
 #[repr(C)]
 pub struct FileState<V: Vfs, F: DatabaseHandle> {
-    pub base: sqlite3_sys::sqlite3_file,
+    pub base: libsqlite3_sys::sqlite3_file,
     pub ext: MaybeUninit<FileExt<V, F>>,
 }
 
@@ -68,9 +68,9 @@ pub(crate) fn null_ptr_error<External>() -> crate::error::Error<External> {
 }
 
 pub unsafe fn vfs_state<'a, V: Vfs>(
-    ptr: *mut sqlite3_sys::sqlite3_vfs,
+    ptr: *mut libsqlite3_sys::sqlite3_vfs,
 ) -> Result<&'a mut State<V>, crate::error::Error<V::Error>> {
-    let vfs: &mut sqlite3_sys::sqlite3_vfs = ptr.as_mut().ok_or_else(null_ptr_error)?;
+    let vfs: &mut libsqlite3_sys::sqlite3_vfs = ptr.as_mut().ok_or_else(null_ptr_error)?;
     let state = (vfs.pAppData as *mut State<V>)
         .as_mut()
         .ok_or_else(null_ptr_error)?;
@@ -78,7 +78,7 @@ pub unsafe fn vfs_state<'a, V: Vfs>(
 }
 
 pub unsafe fn file_state<'a, V: Vfs, F: DatabaseHandle<Error = V::Error>>(
-    ptr: *mut sqlite3_sys::sqlite3_file,
+    ptr: *mut libsqlite3_sys::sqlite3_file,
 ) -> Result<&'a mut FileExt<V, F>, crate::error::Error<V::Error>> {
     let f = (ptr as *mut FileState<V, F>)
         .as_mut()

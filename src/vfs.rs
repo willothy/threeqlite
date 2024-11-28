@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use aws_config::BehaviorVersion;
 use aws_sdk_s3::types::ObjectLockLegalHoldStatus;
 use rand::{Rng as _, RngCore};
 use serde::{Deserialize, Serialize};
@@ -389,6 +390,31 @@ impl Inner {
 #[derive(Clone)]
 pub struct ThreeQLite {
     pub inner: Arc<RwLock<Inner>>,
+}
+
+impl ThreeQLite {
+    pub async fn new() -> Self {
+        let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+        let s3 = aws_sdk_s3::Client::new(&sdk_config);
+
+        let bucket = "threeqlite".to_owned();
+
+        Self {
+            inner: Arc::new(RwLock::new(Inner {
+                s3: s3.clone(),
+                metadata_lock: S3FileLock {
+                    s3,
+                    bucket: bucket.clone(),
+                    lock_file: "lockfile".to_owned(),
+                    current_lock: None,
+                },
+                metadata_filename: "metadata".to_owned(),
+                current_lock: None,
+                bucket: bucket.clone(),
+                db_filename: "test.db".to_owned(),
+            })),
+        }
+    }
 }
 
 impl Vfs for ThreeQLite {

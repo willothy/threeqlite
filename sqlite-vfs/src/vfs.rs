@@ -8,6 +8,8 @@ use std::{
     time::Duration,
 };
 
+use tokio::runtime;
+
 use crate::{
     error::Error,
     state::{null_ptr_error, vfs_state, FileExt, FileState},
@@ -15,17 +17,16 @@ use crate::{
 };
 
 /// Open a new file handler.
-#[tokio::main]
 async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_name: *const c_char,
-    p_file: *mut sqlite3_sys::sqlite3_file,
+    p_file: *mut libsqlite3_sys::sqlite3_file,
     flags: c_int,
     p_out_flags: *mut c_int,
 ) -> c_int {
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+        Err(_) => return libsqlite3_sys::SQLITE_ERROR,
     };
 
     let name = if z_name.is_null() {
@@ -36,7 +37,7 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
             Ok(name) => Some(name),
             Err(_) => {
                 return state.set_last_error(
-                    sqlite3_sys::SQLITE_CANTOPEN,
+                    libsqlite3_sys::SQLITE_CANTOPEN,
                     Error::InvalidDbName {
                         name: raw.to_owned(),
                     },
@@ -49,25 +50,25 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
     let mut opts = match OpenOptions::from_flags(flags) {
         Some(opts) => opts,
         None => {
-            return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::InvalidOpenFlags);
+            return state.set_last_error(libsqlite3_sys::SQLITE_CANTOPEN, Error::InvalidOpenFlags);
         }
     };
 
     if z_name.is_null() && !opts.delete_on_close {
-        return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::InvalidOpenFlags);
+        return state.set_last_error(libsqlite3_sys::SQLITE_CANTOPEN, Error::InvalidOpenFlags);
     }
 
     let out_file = match (p_file as *mut FileState<V, F>).as_mut() {
         Some(f) => f,
         None => {
-            return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::InvalidFilePtr);
+            return state.set_last_error(libsqlite3_sys::SQLITE_CANTOPEN, Error::InvalidFilePtr);
         }
     };
 
     let mut powersafe_overwrite = true;
-    if flags & sqlite3_sys::SQLITE_OPEN_URI > 0 && name.is_some() {
+    if flags & libsqlite3_sys::SQLITE_OPEN_URI > 0 && name.is_some() {
         let param = b"psow\0";
-        if sqlite3_sys::sqlite3_uri_boolean(z_name, param.as_ptr() as *const c_char, 1) == 0 {
+        if libsqlite3_sys::sqlite3_uri_boolean(z_name, param.as_ptr() as *const c_char, 1) == 0 {
             powersafe_overwrite = false;
         }
     }
@@ -88,7 +89,7 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
                 && !state.vfs.exists(&name).await.unwrap_or(false) =>
         {
             return state.set_last_error(
-                sqlite3_sys::SQLITE_READONLY_DIRECTORY,
+                libsqlite3_sys::SQLITE_READONLY_DIRECTORY,
                 Error::PermissionDenied,
             );
         }
@@ -105,14 +106,14 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
 
         // // e.g. tried to open a directory
         // Err(err) if err.kind() == ErrorKind::Other && opts.access == OpenAccess::Read => {
-        //     return state.set_last_error(sqlite3_sys::SQLITE_IOERR, err);
+        //     return state.set_last_error(libsqlite3_sys::SQLITE_IOERR, err);
         // }
         Err(err) => Err(err),
     };
     let file = match result {
         Ok(f) => f,
         Err(err) => {
-            return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, err);
+            return state.set_last_error(libsqlite3_sys::SQLITE_CANTOPEN, err);
         }
     };
 
@@ -141,22 +142,21 @@ async unsafe fn open_inner<F: DatabaseHandle, V: Vfs<Handle = F>>(
     state.next_id = state.next_id.overflowing_add(1).0;
 
     // #[cfg(feature = "sqlite_test")]
-    // sqlite3_sys::sqlite3_inc_open_file_count();
+    // libsqlite3_sys::sqlite3_inc_open_file_count();
 
-    sqlite3_sys::SQLITE_OK
+    libsqlite3_sys::SQLITE_OK
 }
 
 /// Delete the file located at `z_path`. If the `sync_dir` argument is true, ensure the
 /// file-system modifications are synced to disk before returning.
-#[tokio::main]
 async unsafe fn delete_inner<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     _sync_dir: c_int,
 ) -> c_int {
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_DELETE,
+        Err(_) => return libsqlite3_sys::SQLITE_DELETE,
     };
 
     let raw = CStr::from_ptr(z_path);
@@ -164,7 +164,7 @@ async unsafe fn delete_inner<V: Vfs>(
         Ok(name) => name,
         Err(_) => {
             return state.set_last_error(
-                sqlite3_sys::SQLITE_ERROR,
+                libsqlite3_sys::SQLITE_ERROR,
                 crate::error::Error::InvalidDbName {
                     name: raw.to_owned(),
                 },
@@ -174,33 +174,32 @@ async unsafe fn delete_inner<V: Vfs>(
     log::trace!("delete name={}", path);
 
     match state.vfs.delete(path).await {
-        Ok(_) => sqlite3_sys::SQLITE_OK,
+        Ok(_) => libsqlite3_sys::SQLITE_OK,
         Err(err) => {
             if let Error::DbNotFound { name } = &err {
-                return sqlite3_sys::SQLITE_IOERR_DELETE_NOENT;
+                return libsqlite3_sys::SQLITE_IOERR_DELETE_NOENT;
             }
-            state.set_last_error(sqlite3_sys::SQLITE_DELETE, err)
+            state.set_last_error(libsqlite3_sys::SQLITE_DELETE, err)
         }
     }
 }
 
 /// Test for access permissions. Return true if the requested permission is available, or false
 /// otherwise.
-#[tokio::main]
 async unsafe fn access_inner<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     flags: c_int,
     p_res_out: *mut c_int,
 ) -> c_int {
     // #[cfg(feature = "sqlite_test")]
     // if simulate_io_error() {
-    //     return sqlite3_sys::SQLITE_IOERR_ACCESS;
+    //     return libsqlite3_sys::SQLITE_IOERR_ACCESS;
     // }
 
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+        Err(_) => return libsqlite3_sys::SQLITE_ERROR,
     };
 
     let path = match CStr::from_ptr(z_path).to_str() {
@@ -215,16 +214,16 @@ async unsafe fn access_inner<V: Vfs>(
                 *p_res_out = false as i32;
             }
 
-            return sqlite3_sys::SQLITE_OK;
+            return libsqlite3_sys::SQLITE_OK;
         }
     };
     log::trace!("access z_name={} flags={}", path, flags);
 
     let result = match flags {
-        sqlite3_sys::SQLITE_ACCESS_EXISTS => state.vfs.exists(path).await,
-        sqlite3_sys::SQLITE_ACCESS_READ => state.vfs.access(path, false).await,
-        sqlite3_sys::SQLITE_ACCESS_READWRITE => state.vfs.access(path, true).await,
-        _ => return sqlite3_sys::SQLITE_IOERR_ACCESS,
+        libsqlite3_sys::SQLITE_ACCESS_EXISTS => state.vfs.exists(path).await,
+        libsqlite3_sys::SQLITE_ACCESS_READ => state.vfs.access(path, false).await,
+        libsqlite3_sys::SQLITE_ACCESS_READWRITE => state.vfs.access(path, true).await,
+        _ => return libsqlite3_sys::SQLITE_IOERR_ACCESS,
     };
 
     if let Err(err) = result.and_then(|ok| {
@@ -232,30 +231,29 @@ async unsafe fn access_inner<V: Vfs>(
         *p_res_out = ok as i32;
         Ok(())
     }) {
-        return state.set_last_error(sqlite3_sys::SQLITE_IOERR_ACCESS, err);
+        return state.set_last_error(libsqlite3_sys::SQLITE_IOERR_ACCESS, err);
     }
 
-    sqlite3_sys::SQLITE_OK
+    libsqlite3_sys::SQLITE_OK
 }
 
 /// Populate buffer `z_out` with the full canonical pathname corresponding to the pathname in
 /// `z_path`. `z_out` is guaranteed to point to a buffer of at least (INST_MAX_PATHNAME+1)
 /// bytes.
-#[tokio::main]
 async unsafe fn full_pathname_inner<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     n_out: c_int,
     z_out: *mut c_char,
 ) -> c_int {
     // #[cfg(feature = "sqlite_test")]
     // if simulate_io_error() {
-    //     return sqlite3_sys::SQLITE_ERROR;
+    //     return libsqlite3_sys::SQLITE_ERROR;
     // }
 
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+        Err(_) => return libsqlite3_sys::SQLITE_ERROR,
     };
 
     let raw = CStr::from_ptr(z_path);
@@ -263,7 +261,7 @@ async unsafe fn full_pathname_inner<V: Vfs>(
         Ok(name) => name,
         Err(_) => {
             return state.set_last_error(
-                sqlite3_sys::SQLITE_ERROR,
+                libsqlite3_sys::SQLITE_ERROR,
                 Error::InvalidDbName {
                     name: raw.to_owned(),
                 },
@@ -279,67 +277,81 @@ async unsafe fn full_pathname_inner<V: Vfs>(
         .map(|name| CString::new(name.to_string()).expect("str should never contain null byte"))
     {
         Ok(name) => name,
-        Err(err) => return state.set_last_error(sqlite3_sys::SQLITE_ERROR, err),
+        Err(err) => return state.set_last_error(libsqlite3_sys::SQLITE_ERROR, err),
     };
 
     let name = name.to_bytes_with_nul();
     if name.len() > n_out as usize || name.len() > MAX_PATH_LENGTH {
-        return state.set_last_error(sqlite3_sys::SQLITE_CANTOPEN, Error::PathTooLong);
+        return state.set_last_error(libsqlite3_sys::SQLITE_CANTOPEN, Error::PathTooLong);
     }
     let out = std::slice::from_raw_parts_mut(z_out as *mut u8, name.len());
     out.copy_from_slice(name);
 
-    sqlite3_sys::SQLITE_OK
+    libsqlite3_sys::SQLITE_OK
 }
 
 /// Open a new file handler.
 pub unsafe extern "C" fn open<F: DatabaseHandle, V: Vfs<Handle = F>>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_name: *const c_char,
-    p_file: *mut sqlite3_sys::sqlite3_file,
+    p_file: *mut libsqlite3_sys::sqlite3_file,
     flags: c_int,
     p_out_flags: *mut c_int,
 ) -> c_int {
-    open_inner::<F, V>(p_vfs, z_name, p_file, flags, p_out_flags)
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(open_inner::<F, V>(
+            p_vfs,
+            z_name,
+            p_file,
+            flags,
+            p_out_flags,
+        ))
 }
 
 /// Delete the file located at `z_path`. If the `sync_dir` argument is true, ensure the
 /// file-system modifications are synced to disk before returning.
 pub unsafe extern "C" fn delete<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     sync_dir: c_int,
 ) -> c_int {
-    delete_inner::<V>(p_vfs, z_path, sync_dir)
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(delete_inner::<V>(p_vfs, z_path, sync_dir))
 }
 
 /// Test for access permissions. Return true if the requested permission is available, or false
 /// otherwise.
 pub unsafe extern "C" fn access<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     flags: c_int,
     p_res_out: *mut c_int,
 ) -> c_int {
-    access_inner::<V>(p_vfs, z_path, flags, p_res_out)
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(access_inner::<V>(p_vfs, z_path, flags, p_res_out))
 }
 
 /// Populate buffer `z_out` with the full canonical pathname corresponding to the pathname in
 /// `z_path`. `z_out` is guaranteed to point to a buffer of at least (INST_MAX_PATHNAME+1)
 /// bytes.
 pub unsafe extern "C" fn full_pathname<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
     n_out: c_int,
     z_out: *mut c_char,
 ) -> c_int {
-    full_pathname_inner::<V>(p_vfs, z_path, n_out, z_out)
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(full_pathname_inner::<V>(p_vfs, z_path, n_out, z_out))
 }
 
 /// Open the dynamic library located at `z_path` and return a handle.
 #[allow(unused_variables)]
 pub unsafe extern "C" fn dlopen<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_path: *const c_char,
 ) -> *mut c_void {
     log::trace!("dlopen");
@@ -363,7 +375,7 @@ pub unsafe extern "C" fn dlopen<V>(
 /// describing the most recent error encountered associated with dynamic libraries.
 #[allow(unused_variables)]
 pub unsafe extern "C" fn dlerror<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     n_byte: c_int,
     z_err_msg: *mut c_char,
 ) {
@@ -386,17 +398,17 @@ pub unsafe extern "C" fn dlerror<V>(
     #[cfg(not(feature = "loadext"))]
     {
         let msg = concat!("Loadable extensions are not supported", "\0");
-        sqlite3_sys::sqlite3_snprintf(n_byte, z_err_msg, msg.as_ptr() as _);
+        libsqlite3_sys::sqlite3_snprintf(n_byte, z_err_msg, msg.as_ptr() as _);
     }
 }
 
 /// Return a pointer to the symbol `z_sym` in the dynamic library pHandle.
 #[allow(unused_variables)]
 pub unsafe extern "C" fn dlsym<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     p: *mut c_void,
     z_sym: *const c_char,
-) -> Option<unsafe extern "C" fn(*mut sqlite3_sys::sqlite3_vfs, *mut c_void, *const c_char)> {
+) -> Option<unsafe extern "C" fn(*mut libsqlite3_sys::sqlite3_vfs, *mut c_void, *const c_char)> {
     log::trace!("dlsym");
 
     #[cfg(feature = "loadext")]
@@ -416,7 +428,10 @@ pub unsafe extern "C" fn dlsym<V>(
 
 /// Close the dynamic library handle `p_handle`.
 #[allow(unused_variables)]
-pub unsafe extern "C" fn dlclose<V>(p_vfs: *mut sqlite3_sys::sqlite3_vfs, p_handle: *mut c_void) {
+pub unsafe extern "C" fn dlclose<V>(
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
+    p_handle: *mut c_void,
+) {
     log::trace!("dlclose");
 
     #[cfg(feature = "loadext")]
@@ -432,9 +447,8 @@ pub unsafe extern "C" fn dlclose<V>(p_vfs: *mut sqlite3_sys::sqlite3_vfs, p_hand
     }
 }
 
-#[tokio::main]
 async unsafe fn randomness_inner<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     n_byte: c_int,
     z_buf_out: *mut c_char,
 ) -> c_int {
@@ -457,23 +471,25 @@ async unsafe fn randomness_inner<V: Vfs>(
 
 /// Populate the buffer pointed to by `z_buf_out` with `n_byte` bytes of random data.
 pub unsafe extern "C" fn randomness<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     n_byte: c_int,
     z_buf_out: *mut c_char,
 ) -> c_int {
-    randomness_inner::<V>(p_vfs, n_byte, z_buf_out)
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(randomness_inner::<V>(p_vfs, n_byte, z_buf_out))
 }
 
 /// Sleep for `n_micro` microseconds. Return the number of microseconds actually slept.
 pub unsafe extern "C" fn sleep<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     n_micro: c_int,
 ) -> c_int {
     log::trace!("sleep");
 
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+        Err(_) => return libsqlite3_sys::SQLITE_ERROR,
     };
     state
         .vfs
@@ -483,7 +499,7 @@ pub unsafe extern "C" fn sleep<V: Vfs>(
 
 /// Return the current time as a Julian Day number in `p_time_out`.
 pub unsafe extern "C" fn current_time<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     p_time_out: *mut f64,
 ) -> c_int {
     log::trace!("current_time");
@@ -492,11 +508,11 @@ pub unsafe extern "C" fn current_time<V>(
     current_time_int64::<V>(p_vfs, &mut i);
 
     *p_time_out = i as f64 / 86400000.0;
-    sqlite3_sys::SQLITE_OK
+    libsqlite3_sys::SQLITE_OK
 }
 
 pub unsafe extern "C" fn current_time_int64<V>(
-    _p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    _p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     p: *mut i64,
 ) -> i32 {
     log::trace!("current_time_int64");
@@ -504,39 +520,39 @@ pub unsafe extern "C" fn current_time_int64<V>(
     const UNIX_EPOCH: i64 = 24405875 * 8640000;
     let now = time::OffsetDateTime::now_utc().unix_timestamp() + UNIX_EPOCH;
     // #[cfg(feature = "sqlite_test")]
-    // let now = if sqlite3_sys::sqlite3_get_current_time() > 0 {
-    //     sqlite3_sys::sqlite3_get_current_time() as i64 * 1000 + UNIX_EPOCH
+    // let now = if libsqlite3_sys::sqlite3_get_current_time() > 0 {
+    //     libsqlite3_sys::sqlite3_get_current_time() as i64 * 1000 + UNIX_EPOCH
     // } else {
     //     now
     // };
 
     *p = now;
-    sqlite3_sys::SQLITE_OK
+    libsqlite3_sys::SQLITE_OK
 }
 
 #[cfg(feature = "syscall")]
 pub unsafe extern "C" fn set_system_call<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_name: *const ::std::os::raw::c_char,
-    p_new_func: sqlite3_sys::sqlite3_syscall_ptr,
+    p_new_func: libsqlite3_sys::libsqlite3_syscall_ptr,
 ) -> ::std::os::raw::c_int {
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+        Err(_) => return libsqlite3_sys::SQLITE_ERROR,
     };
 
     if let Some(set_system_call) = state.parent_vfs.as_ref().and_then(|v| v.xSetSystemCall) {
         return set_system_call(state.parent_vfs, z_name, p_new_func);
     }
 
-    sqlite3_sys::SQLITE_ERROR
+    libsqlite3_sys::SQLITE_ERROR
 }
 
 #[cfg(feature = "syscall")]
 pub unsafe extern "C" fn get_system_call<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_name: *const ::std::os::raw::c_char,
-) -> sqlite3_sys::sqlite3_syscall_ptr {
+) -> libsqlite3_sys::libsqlite3_syscall_ptr {
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
         Err(_) => return None,
@@ -551,7 +567,7 @@ pub unsafe extern "C" fn get_system_call<V>(
 
 #[cfg(feature = "syscall")]
 pub unsafe extern "C" fn next_system_call<V>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     z_name: *const ::std::os::raw::c_char,
 ) -> *const ::std::os::raw::c_char {
     let state = match vfs_state::<V>(p_vfs) {
@@ -567,28 +583,28 @@ pub unsafe extern "C" fn next_system_call<V>(
 }
 
 pub unsafe extern "C" fn get_last_error<V: Vfs>(
-    p_vfs: *mut sqlite3_sys::sqlite3_vfs,
+    p_vfs: *mut libsqlite3_sys::sqlite3_vfs,
     n_byte: c_int,
     z_err_msg: *mut c_char,
 ) -> c_int {
     let state = match vfs_state::<V>(p_vfs) {
         Ok(state) => state,
-        Err(_) => return sqlite3_sys::SQLITE_ERROR,
+        Err(_) => return libsqlite3_sys::SQLITE_ERROR,
     };
     if let Some((eno, err)) = state.last_error.lock().unwrap().as_ref() {
         let msg = match CString::new(err.to_string()) {
             Ok(msg) => msg,
-            Err(_) => return sqlite3_sys::SQLITE_ERROR,
+            Err(_) => return libsqlite3_sys::SQLITE_ERROR,
         };
 
         let msg = msg.to_bytes_with_nul();
         if msg.len() > n_byte as usize {
-            return sqlite3_sys::SQLITE_ERROR;
+            return libsqlite3_sys::SQLITE_ERROR;
         }
         let out = std::slice::from_raw_parts_mut(z_err_msg as *mut u8, msg.len());
         out.copy_from_slice(msg);
 
         return *eno;
     }
-    sqlite3_sys::SQLITE_OK
+    libsqlite3_sys::SQLITE_OK
 }
